@@ -17,7 +17,16 @@
    categoria: "aovivo" | "filmes" | "series"
    epg: programação fictícia [hora, nome]
    ------------------------------------------------------------ */
-const CHANNELS = [
+   // ==================================================
+// CONFIGURAÇÃO DA API
+// ==================================================
+
+const API_BASE_URL =
+"https://singles-secretariat-annual-consent.trycloudflare.com";
+
+// Os canais serão carregados automaticamente pela API.
+let CHANNELS = [];
+/*const CHANNELS = [
   {
     id: "nova-1",
     name: "Nova Notícias",
@@ -137,6 +146,7 @@ const CHANNELS = [
     ],
   },
 ];
+*/
 
 /* Stream de teste público (Big Buck Bunny / Mux) — troque pelos seus.
    Fonte de teste usada para validar o player; não é conteúdo próprio. */
@@ -191,7 +201,80 @@ function saveFavorites() {
 }
 
 function getChannel(id) {
-  return CHANNELS.find((c) => c.id === id) || null;
+  // ==================================================
+// CARREGAMENTO DOS CANAIS DO BACKEND
+// ==================================================
+
+async function loadChannels() {
+  try {
+      const response = await fetch(
+          `${API_BASE_URL}/api/channels`,
+          { cache: "no-store" }
+      );
+
+      if (!response.ok) {
+          throw new Error(
+              `Erro HTTP: ${response.status}`
+          );
+      }
+
+      const dados = await response.json();
+
+      if (!Array.isArray(dados)) {
+          throw new Error("A API não retornou uma lista válida.");
+      }
+
+      CHANNELS = dados.map((canal, index) => {
+          // Cria um ID quando tvg-id estiver vazio.
+          const slug = (canal.name || `canal-${index}`)
+              .toLowerCase()
+              .normalize("NFD")
+              .replace(/[\u0300-\u036f]/g, "")
+              .replace(/[^a-z0-9]+/g, "-")
+              .replace(/^-|-$/g, "");
+
+          return {
+              id: canal.id || `${slug}-${index}`,
+              name: canal.name || "Canal sem nome",
+              category: "aovivo",
+              isLive: true,
+              url: canal.url || "",
+              logo: canal.logo || "",
+              group: canal.group || "Geral",
+              desc: canal.group
+                  ? `Transmissão ao vivo — ${canal.group}`
+                  : "Transmissão ao vivo",
+              epg: []
+          };
+      });
+
+      console.log(
+          `${CHANNELS.length} canais carregados da playlist M3U.`
+      );
+
+      return CHANNELS;
+
+  } catch (error) {
+      console.error(
+          "Erro ao carregar canais:",
+          error
+      );
+
+      CHANNELS = [];
+
+      const empty = $("#gridEmpty");
+
+      if (empty) {
+          empty.hidden = false;
+          empty.textContent =
+              "Não foi possível carregar os canais. Verifique a conexão com o servidor.";
+      }
+
+      return [];
+  }
+}
+
+/*return CHANNELS.find((c) => c.id === id) || null;*/
 }
 
 /* ------------------------------------------------------------
@@ -213,7 +296,29 @@ function startClock() {
 /* ------------------------------------------------------------
    5. RENDERIZAÇÃO DA GRADE E CARROSSEIS
    ------------------------------------------------------------ */
-function matchesFilters(channel) {
+   function matchesFilters(channel) {
+    const cat = state.category;
+
+    const okCat =
+        cat === "inicio" ||
+        (
+            cat === "favoritos"
+                ? state.favorites.has(channel.id)
+                : channel.category === cat
+        );
+
+    const q = state.search.trim().toLowerCase();
+
+    const okSearch =
+        !q ||
+        channel.name.toLowerCase().includes(q) ||
+        (channel.desc || "").toLowerCase().includes(q) ||
+        (channel.group || "").toLowerCase().includes(q);
+
+    return okCat && okSearch;
+}
+
+/*function matchesFilters(channel) {
   const cat = state.category;
   const okCat =
     cat === "inicio" ||
@@ -223,20 +328,49 @@ function matchesFilters(channel) {
   const q = state.search.trim().toLowerCase();
   const okSearch = !q || channel.name.toLowerCase().includes(q) || channel.desc.toLowerCase().includes(q);
   return okCat && okSearch;
-}
+}*/
 
 function channelCard(channel) {
   const card = el("button", "card");
   card.type = "button";
   card.dataset.id = channel.id;
   card.setAttribute("role", "listitem");
-  card.setAttribute("aria-label", `${channel.name} — ${channel.desc}`);
+  //card.setAttribute("aria-label", `${channel.name} — ${channel.desc}`);
+  card.setAttribute(
+    "aria-label",
+    `${channel.name} — ${channel.desc || "Canal"}`
+);
 
   if (state.selectedId === channel.id) card.classList.add("is-selected");
 
-  const thumb = el("div", "card__thumb");
+  /*const thumb = el("div", "card__thumb");
   const initial = el("span", "card__initial", channel.name.charAt(0));
-  thumb.appendChild(initial);
+  thumb.appendChild(initial);*/
+  const thumb = el("div", "card__thumb");
+
+if (channel.logo) {
+    const img = document.createElement("img");
+
+    img.src = channel.logo;
+    img.alt = channel.name;
+
+    img.style.width = "100%";
+    img.style.height = "100%";
+    img.style.objectFit = "contain";
+
+    img.onerror = () => img.remove();
+
+    thumb.appendChild(img);
+}
+
+const initial = el(
+    "span",
+    "card__initial",
+    channel.name.charAt(0)
+);
+
+thumb.appendChild(initial);
+
 
   if (channel.isLive) thumb.appendChild(el("span", "card__live", "AO VIVO"));
   if (state.favorites.has(channel.id)) thumb.appendChild(el("span", "card__fav", "♥"));
@@ -248,7 +382,8 @@ function channelCard(channel) {
   const body = el("div", "card__body");
   body.appendChild(el("h3", "card__name", channel.name));
 
-  const catLabel = { aovivo: "Ao vivo", filmes: "Filmes", series: "Séries" }[channel.category] || "Canal";
+  //const catLabel = { aovivo: "Ao vivo", filmes: "Filmes", series: "Séries" }[channel.category] || "Canal";
+  const catLabel = channel.group || "Ao vivo";
   const meta = el("p", "card__meta");
   meta.appendChild(el("span", null, catLabel));
   meta.appendChild(el("span", "dot"));
@@ -668,7 +803,7 @@ function gridColumns() {
 /* ------------------------------------------------------------
    11. INICIALIZAÇÃO
    ------------------------------------------------------------ */
-function init() {
+/*function init() {
   startClock();
   setupPlayerControls();
   setupFavorites();
@@ -692,4 +827,63 @@ function init() {
   }
 }
 
-document.addEventListener("DOMContentLoaded", init);
+document.addEventListener("DOMContentLoaded", init);*/
+
+
+// ==================================================
+// INICIALIZAÇÃO
+// ==================================================
+
+async function init() {
+  startClock();
+
+  setupPlayerControls();
+  setupFavorites();
+  setupNav();
+  setupKeyboard();
+
+  // Primeiro carrega os canais da playlist M3U.
+  await loadChannels();
+
+  // Depois atualiza a interface.
+  renderGrid();
+  renderShelves();
+
+  // Seleciona o primeiro canal ao vivo.
+  const first = CHANNELS.find(
+      channel => channel.isLive
+  ) || CHANNELS[0];
+
+  if (first) {
+      $("#heroTitle").textContent = first.name;
+
+      $("#heroDesc").textContent = first.desc;
+
+      $("#heroLiveTag").hidden = !first.isLive;
+
+      updateFavButton(first);
+
+      renderEpg(first);
+
+      state.selectedId = first.id;
+
+      renderGrid();
+      renderShelves();
+
+      showPlayerState("noUrl");
+  } else {
+      $("#heroTitle").textContent = "NovaTV";
+
+      $("#heroDesc").textContent =
+          "Nenhum canal disponível.";
+
+      $("#heroLiveTag").hidden = true;
+
+      showPlayerState("noUrl");
+  }
+}
+
+document.addEventListener(
+  "DOMContentLoaded",
+  init
+);
