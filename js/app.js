@@ -1,581 +1,1134 @@
+/* ============================================================
+   NovaTV — app.js otimizado
+   Player HLS (hls.js) + MP4 nativo
+   Navegação por teclado/controle remoto
+   Favoritos, EPG, busca e canais recomendados
+   ============================================================ */
 
 "use strict";
 
-/* =====================================================
-   NOVATV - APP.JS
-   Backend Node.js + HLS.js + MP4
-   ===================================================== */
+/* ============================================================
+   1. CONFIGURAÇÃO DOS CANAIS
+   ============================================================ */
 
-/* 1. CONFIGURAÇÃO */
+const CHANNELS = [
+  {
+    id: "nova-1",
+    name: "Nova Notícias",
+    category: "aovivo",
+    isLive: true,
+    url: "",
+    desc: "Jornalismo 24 horas com cobertura dos principais acontecimentos.",
+    epg: [
+      ["06:00", "Manhã Nova"],
+      ["09:00", "Jornal das Dez"],
+      ["12:00", "Nova Notícias ao Meio-dia"],
+      ["13:00", "Economia em Dia"],
+      ["18:00", "Plantão Nova"],
+      ["21:00", "Grandes Reportagens"]
+    ]
+  },
+  {
+    id: "nova-2",
+    name: "Nova Esportes",
+    category: "aovivo",
+    isLive: true,
+    url: "",
+    desc: "Transmissões esportivas, mesa-redonda e resumos da rodada.",
+    epg: [
+      ["07:00", "Bem-vindo ao Clan"],
+      ["10:00", "Café com Bola"],
+      ["14:00", "Volta Rápida"],
+      ["17:00", "Mesa Redonda Nova"],
+      ["20:00", "Jogo da Noite"]
+    ]
+  },
+  {
+    id: "nova-3",
+    name: "Nova Documenta",
+    category: "aovivo",
+    isLive: true,
+    url: "",
+    desc: "Documentários sobre natureza, ciência e culturas do mundo.",
+    epg: [
+      ["08:00", "Planeta Extremo"],
+      ["11:00", "Mundos Pequenos"],
+      ["15:00", "Rotas do Oceano"],
+      ["19:00", "Origens"],
+      ["22:00", "Universo Sem Fim"]
+    ]
+  },
+  {
+    id: "nova-4",
+    name: "Nova Culinária",
+    category: "aovivo",
+    isLive: true,
+    url: "",
+    desc: "Programas de gastronomia com chefs convidados.",
+    epg: [
+      ["09:00", "Café & Panela"],
+      ["12:30", "Almoço Rápido"],
+      ["16:00", "Doces & Segredos"],
+      ["20:30", "Cozinha de Autor"]
+    ]
+  },
+  {
+    id: "filme-1",
+    name: "Sala Nova — Aventura",
+    category: "filmes",
+    isLive: false,
+    url: "",
+    desc: "Maratona de filmes de aventura em exibição contínua.",
+    epg: [
+      ["10:00", "Trilhas do Horizonte"],
+      ["12:00", "Vento Sul"],
+      ["14:30", "O Último Farol"],
+      ["17:00", "Rota Selvagem"],
+      ["20:00", "Alto Mar"]
+    ]
+  },
+  {
+    id: "filme-2",
+    name: "Sala Nova — Clássicos",
+    category: "filmes",
+    isLive: false,
+    url: "",
+    desc: "Grandes clássicos do cinema restaurados em alta definição.",
+    epg: [
+      ["11:00", "Cidade Antiga"],
+      ["13:30", "A Sétima Carta"],
+      ["16:00", "Noite de Gala"],
+      ["19:30", "Estrela de Prata"]
+    ]
+  },
+  {
+    id: "serie-1",
+    name: "Nova Séries — Drama",
+    category: "series",
+    isLive: false,
+    url: "",
+    desc: "Maratona da série dramática Fronteiras.",
+    epg: [
+      ["09:00", "Fronteiras T1E1"],
+      ["10:00", "Fronteiras T1E2"],
+      ["11:00", "Fronteiras T1E3"],
+      ["12:00", "Fronteiras T1E4"],
+      ["13:00", "Fronteiras T1E5"]
+    ]
+  },
+  {
+    id: "serie-2",
+    name: "Nova Séries — Comédia",
+    category: "series",
+    isLive: false,
+    url: "",
+    desc: "Sitcoms e comédias leves para todas as idades.",
+    epg: [
+      ["08:00", "Vizinhança Feliz E1"],
+      ["08:30", "Vizinhança Feliz E2"],
+      ["09:00", "Papo de Elevador E1"],
+      ["09:30", "Papo de Elevador E2"]
+    ]
+  }
+];
 
-const API_BASE_URL =
-  "https://singles-secretariat-annual-consent.trycloudflare.com";
+/* ============================================================
+   2. ESTADO GLOBAL
+   ============================================================ */
 
-const API_CHANNELS = `${API_BASE_URL}/api/channels`;
-const API_CHANNELS_JSON = `${API_BASE_URL}/api/channels-json`;
+const state = {
+  category: "inicio",
+  search: "",
+  selectedId: null,
+  hls: null,
+  favorites: new Set(loadFavorites()),
+  watching: [],
+  requestId: 0
+};
 
-const $ = selector => document.querySelector(selector);
+const CATEGORY_LABELS = {
+  inicio: "Canais ao vivo",
+  aovivo: "Canais ao vivo",
+  filmes: "Canais de filmes",
+  series: "Canais de séries",
+  favoritos: "Seus favoritos"
+};
+
+/* ============================================================
+   3. ELEMENTOS E UTILITÁRIOS
+   ============================================================ */
+
+const $ = (selector) => document.querySelector(selector);
 
 const video = $("#video");
 
-let channels = [];
-let selectedChannel = null;
-let hls = null;
-let requestId = 0;
+function el(tag, className = "", text = null) {
+  const node = document.createElement(tag);
 
-let favorites = new Set(
-  JSON.parse(localStorage.getItem("novatv.favorites") || "[]")
-);
+  if (className) node.className = className;
+  if (text !== null) node.textContent = text;
 
-/* 2. ESTADO VISUAL */
-
-function playerState(state = "none", message = "") {
-
-  ["stateNoUrl", "stateLoading", "stateNoSignal", "stateError"]
-    .forEach(id => {
-      const element = document.getElementById(id);
-      if (element) element.hidden = true;
-    });
-
-  const element = {
-    noUrl: $("#stateNoUrl"),
-    noSignal: $("#stateNoSignal"),
-    error: $("#stateError")
-  }[state];
-
-  if (element) element.hidden = false;
-
-  if (state === "error" && $("#errorMessage")) {
-    $("#errorMessage").textContent = message;
-  }
+  return node;
 }
 
-/* 3. CONEXÃO COM BACKEND */
+function setText(selector, value) {
+  const node = $(selector);
+  if (node) node.textContent = value ?? "";
+}
 
-async function checkServer() {
+function setHidden(selector, hidden) {
+  const node = $(selector);
+  if (node) node.hidden = hidden;
+}
+
+function getChannel(id) {
+  return CHANNELS.find(channel => channel.id === id) || null;
+}
+
+function isValidChannelUrl(url) {
+  if (typeof url !== "string" || !url.trim()) return false;
+
+  if (url.includes("COLE_A_URL_DO_SEU_STREAM_AQUI")) {
+    return false;
+  }
+
   try {
-    const response = await fetch(`${API_BASE_URL}/health`, {
-      cache: "no-store"
-    });
-
-    if (!response.ok) throw new Error("Servidor indisponível");
-
-    console.log("Backend conectado.");
-    return true;
-
-  } catch (error) {
-    console.error("Erro no backend:", error);
+    const parsed = new URL(url);
+    return ["http:", "https:"].includes(parsed.protocol);
+  } catch {
     return false;
   }
 }
 
-async function loadChannels() {
-
+function loadFavorites() {
   try {
+    const saved = JSON.parse(
+      localStorage.getItem("novatv.favorites") || "[]"
+    );
 
-    let response = await fetch(API_CHANNELS, {
-      cache: "no-store"
-    });
+    if (!Array.isArray(saved)) return [];
 
-    if (!response.ok) {
-      response = await fetch(API_CHANNELS_JSON, {
-        cache: "no-store"
+    return saved.filter(id =>
+      typeof id === "string" && getChannel(id)
+    );
+  } catch {
+    return [];
+  }
+}
+
+function saveFavorites() {
+  try {
+    localStorage.setItem(
+      "novatv.favorites",
+      JSON.stringify([...state.favorites])
+    );
+  } catch (error) {
+    console.warn("Não foi possível salvar os favoritos:", error);
+  }
+}
+
+/* ============================================================
+   4. RELÓGIO
+   ============================================================ */
+
+function startClock() {
+  const time = $("#clockTime");
+  const date = $("#clockDate");
+
+  if (!time && !date) return;
+
+  const dateFormatter = new Intl.DateTimeFormat("pt-BR", {
+    weekday: "long",
+    day: "numeric",
+    month: "short"
+  });
+
+  function updateClock() {
+    const now = new Date();
+
+    if (time) {
+      time.textContent = now.toLocaleTimeString("pt-BR", {
+        hour: "2-digit",
+        minute: "2-digit"
       });
     }
 
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
+    if (date) {
+      date.textContent = dateFormatter.format(now);
     }
+  }
 
-    const data = await response.json();
+  updateClock();
+  setInterval(updateClock, 30000);
+}
 
-    channels = Array.isArray(data)
-      ? data
-      : data.channels || [];
+/* ============================================================
+   5. FILTROS E GRADE
+   ============================================================ */
 
-    renderChannels();
+function matchesFilters(channel) {
+  const category = state.category;
 
-    console.log(`${channels.length} canais carregados.`);
-
-  } catch (error) {
-
-    console.error("Erro ao carregar canais:", error);
-
-    playerState(
-      "error",
-      "Não foi possível conectar ao servidor de canais."
+  const matchesCategory =
+    category === "inicio" ||
+    (
+      category === "favoritos"
+        ? state.favorites.has(channel.id)
+        : channel.category === category
     );
 
-  }
+  const query = state.search.trim().toLowerCase();
+
+  const matchesSearch =
+    !query ||
+    channel.name.toLowerCase().includes(query) ||
+    channel.desc.toLowerCase().includes(query);
+
+  return matchesCategory && matchesSearch;
 }
 
-/* 4. BUSCAR CANAL INDIVIDUAL */
+function channelCard(channel) {
+  const card = el("button", "card");
 
-async function getChannel(id) {
+  card.type = "button";
+  card.dataset.id = channel.id;
 
-  const response = await fetch(
-    `${API_BASE_URL}/api/channels/${encodeURIComponent(id)}`,
-    { cache: "no-store" }
+  card.setAttribute("aria-label", channel.name);
+
+  if (state.selectedId === channel.id) {
+    card.classList.add("is-selected");
+  }
+
+  const thumb = el("div", "card__thumb");
+
+  thumb.appendChild(
+    el("span", "card__initial", channel.name.charAt(0))
   );
 
-  if (!response.ok) {
-    throw new Error(`Canal não encontrado: HTTP ${response.status}`);
+  if (channel.isLive) {
+    thumb.appendChild(el("span", "card__live", "AO VIVO"));
   }
 
-  const data = await response.json();
-
-  return data.channel || data;
-}
-
-/* 5. LIMPAR PLAYER */
-
-function destroyPlayer() {
-
-  if (hls) {
-    hls.destroy();
-    hls = null;
+  if (state.favorites.has(channel.id)) {
+    thumb.appendChild(el("span", "card__fav", "♥"));
   }
 
-  video.pause();
-  video.removeAttribute("src");
-  video.load();
+  if (state.selectedId === channel.id) {
+    thumb.appendChild(el("span", "card__playing", "▶"));
+  }
+
+  const body = el("div", "card__body");
+
+  body.appendChild(
+    el("h3", "card__name", channel.name)
+  );
+
+  const labels = {
+    aovivo: "Ao vivo",
+    filmes: "Filmes",
+    series: "Séries"
+  };
+
+  const meta = el("p", "card__meta");
+
+  meta.appendChild(
+    el("span", "", labels[channel.category] || "Canal")
+  );
+
+  meta.appendChild(el("span", "dot"));
+
+  meta.appendChild(
+    el("span", "", channel.isLive ? "Em transmissão" : "Programado")
+  );
+
+  body.appendChild(meta);
+
+  const current = currentProgram(channel);
+
+  if (current) {
+    body.appendChild(
+      el("p", "card__now", `Agora: ${current}`)
+    );
+  }
+
+  card.append(thumb, body);
+
+  card.addEventListener("click", () => {
+    selectChannel(channel.id);
+  });
+
+  return card;
 }
 
-/* 6. REPRODUZIR TRANSMISSÃO */
+function renderGrid() {
+  const grid = $("#channelGrid");
+  const empty = $("#gridEmpty");
 
-async function playChannel(channel) {
+  if (!grid) return;
 
-  if (!channel || !channel.url) {
-    playerState("noUrl");
+  const channels = CHANNELS.filter(matchesFilters);
+
+  grid.replaceChildren(
+    ...channels.map(channelCard)
+  );
+
+  if (empty) {
+    empty.hidden = channels.length > 0;
+  }
+
+  setText(
+    "#gridTitle",
+    CATEGORY_LABELS[state.category] || "Canais"
+  );
+}
+
+function renderShelves() {
+  const watchingSection = $("#watchingSection");
+  const watchingRow = $("#watchingRow");
+  const recommendedRow = $("#recommendedRow");
+
+  const watching = state.watching
+    .map(getChannel)
+    .filter(Boolean);
+
+  if (watchingSection) {
+    watchingSection.hidden = watching.length === 0;
+  }
+
+  if (watchingRow) {
+    watchingRow.replaceChildren(
+      ...watching.map(channelCard)
+    );
+  }
+
+  const recommended = CHANNELS
+    .filter(channel =>
+      channel.isLive && channel.id !== state.selectedId
+    )
+    .slice(0, 6);
+
+  if (recommendedRow) {
+    recommendedRow.replaceChildren(
+      ...recommended.map(channelCard)
+    );
+  }
+}
+
+/* ============================================================
+   6. EPG — PROGRAMAÇÃO
+   ============================================================ */
+
+function parseStart(time) {
+  if (typeof time !== "string" || !/^\d{2}:\d{2}$/.test(time)) {
+    return -1;
+  }
+
+  const [hours, minutes] = time.split(":").map(Number);
+
+  if (hours > 23 || minutes > 59) return -1;
+
+  return hours * 60 + minutes;
+}
+
+function currentProgram(channel) {
+  if (!Array.isArray(channel.epg) || !channel.epg.length) {
+    return null;
+  }
+
+  const now = new Date();
+  const currentMinutes = now.getHours() * 60 + now.getMinutes();
+
+  const schedule = channel.epg
+    .filter(item =>
+      Array.isArray(item) &&
+      item.length >= 2 &&
+      parseStart(item[0]) >= 0
+    )
+    .sort((a, b) => parseStart(a[0]) - parseStart(b[0]));
+
+  if (!schedule.length) return null;
+
+  let current = null;
+
+  for (const item of schedule) {
+    if (parseStart(item[0]) <= currentMinutes) {
+      current = item[1];
+    } else {
+      break;
+    }
+  }
+
+  return current;
+}
+
+function renderEpg(channel) {
+  const section = $("#epgSection");
+  const timeline = $("#epgTimeline");
+
+  if (!section || !timeline) return;
+
+  const schedule = Array.isArray(channel.epg)
+    ? channel.epg.filter(item =>
+        Array.isArray(item) &&
+        item.length >= 2 &&
+        parseStart(item[0]) >= 0
+      ).sort((a, b) => parseStart(a[0]) - parseStart(b[0]))
+    : [];
+
+  if (!schedule.length) {
+    section.hidden = true;
     return;
   }
 
-  const id = ++requestId;
+  setText("#epgChannelName", channel.name);
 
-  destroyPlayer();
+  timeline.replaceChildren();
 
-  selectedChannel = channel;
+  const now = new Date();
+  const currentMinutes = now.getHours() * 60 + now.getMinutes();
 
-  playerState("none");
+  let currentIndex = -1;
+
+  for (let i = 0; i < schedule.length; i++) {
+    const start = parseStart(schedule[i][0]);
+    const nextStart = schedule[i + 1]
+      ? parseStart(schedule[i + 1][0])
+      : 1440;
+
+    if (currentMinutes >= start && currentMinutes < nextStart) {
+      currentIndex = i;
+      break;
+    }
+  }
+
+  schedule.forEach(([time, name], index) => {
+    const item = el("div", "epg__item");
+
+    if (index === currentIndex) {
+      item.classList.add("epg__item--current");
+    } else if (index === currentIndex + 1) {
+      item.classList.add("epg__item--next");
+    }
+
+    item.appendChild(el("span", "epg__time", time));
+    item.appendChild(el("p", "epg__name", name));
+
+    if (index === currentIndex) {
+      item.appendChild(
+        el("span", "epg__badge", "NO AR AGORA")
+      );
+    }
+
+    timeline.appendChild(item);
+  });
+
+  section.hidden = false;
+}
+
+/* ============================================================
+   7. PLAYER HLS / MP4
+   ============================================================ */
+
+function showPlayerState(which) {
+  const states = {
+    noUrl: $("#stateNoUrl"),
+    loading: $("#stateLoading"),
+    noSignal: $("#stateNoSignal"),
+    error: $("#stateError")
+  };
+
+  Object.entries(states).forEach(([key, node]) => {
+    if (node) {
+      // A mensagem de carregamento permanece desativada.
+      node.hidden = key !== which || key === "loading";
+    }
+  });
+}
+
+function destroyHls() {
+  if (state.hls) {
+    try {
+      state.hls.destroy();
+    } catch (error) {
+      console.warn("Erro ao encerrar HLS:", error);
+    }
+
+    state.hls = null;
+  }
+}
+
+function stopPlayer() {
+  destroyHls();
+
+  if (!video) return;
+
+  video.pause();
+  video.removeAttribute("src");
+
+  try {
+    video.load();
+  } catch (error) {
+    console.warn("Erro ao limpar player:", error);
+  }
+}
+
+function updatePlayPauseIcon() {
+  if (!video) return;
+
+  const playIcon = $(".pbtn__icon--play");
+  const pauseIcon = $(".pbtn__icon--pause");
+
+  if (playIcon) {
+    playIcon.style.display = video.paused ? "" : "none";
+  }
+
+  if (pauseIcon) {
+    pauseIcon.style.display = video.paused ? "none" : "";
+  }
+}
+
+function isHlsSource(url) {
+  return /\.m3u8($|[?#])/i.test(url);
+}
+
+function showError(message, requestId) {
+  // Ignora erros pertencentes a um canal anterior.
+  if (requestId !== undefined && requestId !== state.requestId) {
+    return;
+  }
+
+  destroyHls();
+
+  if (video) {
+    video.pause();
+  }
+
+  setText("#errorMessage", message);
+  showPlayerState("error");
+}
+
+function attachSource(channel, requestId) {
+  stopPlayer();
+
+  if (!video) {
+    console.error("Elemento #video não encontrado no HTML.");
+    return false;
+  }
+
+  if (!isValidChannelUrl(channel.url)) {
+    showPlayerState("noUrl");
+    return false;
+  }
+
+  // Não exibe o overlay de carregamento.
+  showPlayerState("none");
 
   const url = channel.url.trim();
 
-  video.muted = true;
-  video.playsInline = true;
-
-  // HLS
-
-  if (url.toLowerCase().includes(".m3u8")) {
-
-    // HLS nativo
-
+  if (isHlsSource(url)) {
+    // Safari e dispositivos com suporte HLS nativo.
     if (video.canPlayType("application/vnd.apple.mpegurl")) {
-
       video.src = url;
       video.load();
-
-      video.play().catch(error => {
-        console.warn("Clique em play para iniciar:", error);
-      });
-
-      return;
+      return true;
     }
 
-    // HLS.js
-
-    if (window.Hls && Hls.isSupported()) {
-
-      let networkRetries = 0;
-      let mediaRetries = 0;
-
-      hls = new Hls({
+    // HLS.js para Chrome, Edge e Firefox.
+    if (window.Hls && window.Hls.isSupported()) {
+      const hls = new window.Hls({
         enableWorker: true,
-        lowLatencyMode: false,
+        lowLatencyMode: true,
+        backBufferLength: 30,
         maxBufferLength: 30,
-        manifestLoadingMaxRetry: 3,
-        levelLoadingMaxRetry: 3,
-        fragLoadingMaxRetry: 3
+        maxMaxBufferLength: 60
       });
 
-      hls.on(Hls.Events.MEDIA_ATTACHED, () => {
-        if (id === requestId) {
-          hls.loadSource(url);
-        }
-      });
+      state.hls = hls;
 
-      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      hls.on(window.Hls.Events.ERROR, (_event, data) => {
+        if (requestId !== state.requestId) return;
+        if (!data.fatal) return;
 
-        if (id !== requestId) return;
-
-        video.play().catch(error => {
-          console.warn("Reprodução manual necessária:", error);
-        });
-
-      });
-
-      hls.on(Hls.Events.ERROR, (_event, data) => {
-
-        if (id !== requestId || !data.fatal) return;
-
-        console.error("Erro HLS:", data);
-
-        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-
-          if (networkRetries++ < 2) {
-            hls.startLoad();
-          } else {
-            playerState(
-              "error",
-              "Falha de conexão com a transmissão."
-            );
-          }
-
-        } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
-
-          if (mediaRetries++ < 2) {
-            hls.recoverMediaError();
-          } else {
-            playerState(
-              "error",
-              "Falha na reprodução da mídia."
-            );
-          }
-
-        } else {
-
-          playerState(
-            "error",
-            "Não foi possível reproduzir este canal."
+        if (data.type === window.Hls.ErrorTypes.NETWORK_ERROR) {
+          showError(
+            "Falha de rede ao acessar a transmissão. Verifique a URL, os segmentos HLS e as permissões CORS.",
+            requestId
           );
-
+        } else if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR) {
+          showError(
+            "Erro de mídia. O formato da transmissão pode ser incompatível.",
+            requestId
+          );
+        } else {
+          showError(
+            "Não foi possível iniciar a transmissão HLS.",
+            requestId
+          );
         }
-
       });
 
       hls.attachMedia(video);
 
-      return;
+      hls.on(window.Hls.Events.MEDIA_ATTACHED, () => {
+        if (requestId !== state.requestId) return;
+        hls.loadSource(url);
+      });
+
+      return true;
     }
 
-    playerState(
-      "error",
-      "Seu navegador não suporta HLS."
+    showError(
+      "Este navegador não oferece suporte à reprodução HLS necessária.",
+      requestId
     );
 
-    return;
+    return false;
   }
 
-  // MP4
-
+  // MP4 e formatos nativos compatíveis.
   video.src = url;
   video.load();
 
-  video.play().catch(error => {
-    console.warn("Reprodução manual necessária:", error);
-  });
-
+  return true;
 }
 
-/* 7. SELECIONAR CANAL */
+/* ============================================================
+   8. SELEÇÃO E REPRODUÇÃO DOS CANAIS
+   ============================================================ */
 
-async function selectChannel(id) {
+function selectChannel(id) {
+  const channel = getChannel(id);
 
-  try {
+  if (!channel || !video) return;
 
-    const channel = await getChannel(id);
+  // Identificador evita que eventos antigos afetem o canal atual.
+  const requestId = ++state.requestId;
 
-    if (!channel.url) {
-      playerState("noUrl");
-      return;
-    }
+  state.selectedId = id;
 
-    selectedChannel = channel;
+  state.watching = [
+    id,
+    ...state.watching.filter(item => item !== id)
+  ].slice(0, 6);
 
-    $("#heroTitle").textContent = channel.name || "Canal";
-    $("#heroDesc").textContent = channel.group || "";
+  setText("#heroTitle", channel.name);
+  setText("#heroDesc", channel.desc);
 
-    if ($("#heroLiveTag")) {
-      $("#heroLiveTag").hidden = false;
-    }
+  setHidden("#heroLiveTag", !channel.isLive);
+  setHidden("#liveBadge", !channel.isLive);
 
-    if ($("#liveBadge")) {
-      $("#liveBadge").hidden = false;
-    }
+  updateFavButton(channel);
 
-    updateFavoriteButton();
-    renderChannels();
+  renderEpg(channel);
+  renderGrid();
+  renderShelves();
 
-    await playChannel(channel);
+  const sourceReady = attachSource(channel, requestId);
 
-  } catch (error) {
+  if (!sourceReady) {
+    stopPlayer();
+    updatePlayPauseIcon();
+    return;
+  }
 
-    console.error("Erro ao selecionar canal:", error);
+  // Autoplay silenciado para compatibilidade com navegadores.
+  video.muted = true;
 
-    playerState(
-      "error",
-      "Não foi possível acessar este canal no servidor."
-    );
+  const playPromise = video.play();
 
+  if (playPromise && typeof playPromise.catch === "function") {
+    playPromise
+      .then(() => {
+        if (requestId !== state.requestId) return;
+
+        // Mantém o áudio liberado depois do início da reprodução.
+        video.muted = false;
+        updatePlayPauseIcon();
+      })
+      .catch(() => {
+        if (requestId !== state.requestId) return;
+
+        // O navegador pode bloquear o autoplay.
+        video.pause();
+        video.muted = false;
+        updatePlayPauseIcon();
+      });
   }
 }
 
-/* 8. RENDERIZAR CANAIS */
+/* ============================================================
+   9. EVENTOS DO PLAYER
+   ============================================================ */
 
-function renderChannels() {
+function setupPlayerControls() {
+  if (!video) {
+    console.error("O HTML precisa conter <video id='video'>.");
+    return;
+  }
 
-  const grid = $("#channelGrid");
+  const playPause = $("#playPauseBtn");
+  const mute = $("#muteBtn");
+  const volume = $("#volumeSlider");
+  const fullscreen = $("#fullscreenBtn");
+  const speed = $("#speedSelect");
 
-  if (!grid) return;
+  function togglePlay() {
+    if (!video.currentSrc && !video.src) return;
 
-  grid.replaceChildren();
-
-  const search = ($("#searchInput")?.value || "").toLowerCase();
-
-  const category = document.querySelector(
-    ".topnav__item.is-active"
-  )?.dataset.category || "inicio";
-
-  const filtered = channels.filter(channel => {
-
-    const name = (channel.name || "").toLowerCase();
-    const group = (channel.group || "").toLowerCase();
-
-    const matchesSearch =
-      name.includes(search) || group.includes(search);
-
-    const matchesCategory =
-      category === "inicio" ||
-      (category === "favoritos"
-        ? favorites.has(channel.id)
-        : group.includes(category.toLowerCase()));
-
-    return matchesSearch && matchesCategory;
-
-  });
-
-  filtered.forEach(channel => {
-
-    const card = document.createElement("button");
-
-    card.type = "button";
-    card.className = "card";
-
-    if (selectedChannel?.id === channel.id) {
-      card.classList.add("is-selected");
-    }
-
-    const thumb = document.createElement("div");
-    thumb.className = "card__thumb";
-
-    if (channel.logo) {
-
-      const img = document.createElement("img");
-
-      img.src = channel.logo;
-      img.alt = channel.name || "Canal";
-      img.loading = "lazy";
-
-      thumb.appendChild(img);
-
+    if (video.paused) {
+      video.play().catch(() => {});
     } else {
-
-      const initial = document.createElement("span");
-
-      initial.className = "card__initial";
-      initial.textContent = (channel.name || "?").charAt(0);
-
-      thumb.appendChild(initial);
-
+      video.pause();
     }
+  }
 
-    const body = document.createElement("div");
-    body.className = "card__body";
+  playPause?.addEventListener("click", togglePlay);
 
-    const title = document.createElement("h3");
-    title.className = "card__name";
-    title.textContent = channel.name || "Canal";
+  video.addEventListener("play", updatePlayPauseIcon);
+  video.addEventListener("pause", updatePlayPauseIcon);
 
-    const group = document.createElement("p");
-    group.className = "card__meta";
-    group.textContent = channel.group || "TV";
-
-    body.append(title, group);
-
-    card.append(thumb, body);
-
-    card.addEventListener("click", () => {
-      selectChannel(channel.id);
-    });
-
-    grid.appendChild(card);
-
+  video.addEventListener("playing", () => {
+    showPlayerState("none");
   });
 
-  if ($("#gridEmpty")) {
-    $("#gridEmpty").hidden = filtered.length > 0;
-  }
+  // Não exibe overlay de carregamento durante buffering.
+  video.addEventListener("waiting", () => {});
 
-}
+  video.addEventListener("error", () => {
+    if (!state.selectedId) return;
 
-/* 9. FAVORITOS */
+    // Erros do vídeo sem uma fonte atual são ignorados.
+    if (!video.currentSrc && !video.src) return;
 
-function toggleFavorite() {
-
-  if (!selectedChannel) return;
-
-  const id = selectedChannel.id;
-
-  if (favorites.has(id)) {
-    favorites.delete(id);
-  } else {
-    favorites.add(id);
-  }
-
-  localStorage.setItem(
-    "novatv.favorites",
-    JSON.stringify([...favorites])
-  );
-
-  updateFavoriteButton();
-  renderChannels();
-
-}
-
-function updateFavoriteButton() {
-
-  if (!selectedChannel) return;
-
-  const active = favorites.has(selectedChannel.id);
-
-  if ($("#heroFavBtn")) {
-    $("#heroFavBtn").setAttribute(
-      "aria-pressed",
-      String(active)
+    showError(
+      "O stream não pôde ser carregado. Verifique a URL, o servidor e as permissões CORS.",
+      state.requestId
     );
-  }
+  });
 
-  if ($("#heroFavLabel")) {
-    $("#heroFavLabel").textContent =
-      active ? "Nos favoritos" : "Favoritar";
-  }
+  video.addEventListener("timeupdate", () => {
+    const label = $("#timeLabel");
+    if (!label) return;
 
+    if (Number.isFinite(video.duration) && video.duration > 0) {
+      const format = seconds => {
+        const minutes = Math.floor(seconds / 60);
+        const remaining = Math.floor(seconds % 60);
+
+        return (
+          String(minutes).padStart(2, "0") +
+          ":" +
+          String(remaining).padStart(2, "0")
+        );
+      };
+
+      label.textContent =
+        `${format(video.currentTime)} / ${format(video.duration)}`;
+    } else {
+      label.textContent = "AO VIVO";
+    }
+  });
+
+  mute?.addEventListener("click", () => {
+    video.muted = !video.muted;
+    mute.style.opacity = video.muted ? "0.5" : "1";
+  });
+
+  volume?.addEventListener("input", () => {
+    video.volume = Number(volume.value) / 100;
+    video.muted = video.volume === 0;
+
+    if (mute) {
+      mute.style.opacity = video.muted ? "0.5" : "1";
+    }
+  });
+
+  fullscreen?.addEventListener("click", async () => {
+    const shell = $("#playerShell");
+
+    if (!shell) return;
+
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      } else if (shell.requestFullscreen) {
+        await shell.requestFullscreen();
+      }
+    } catch (error) {
+      console.warn("Não foi possível ativar tela cheia:", error);
+    }
+  });
+
+  speed?.addEventListener("change", () => {
+    const rate = Number(speed.value);
+
+    video.playbackRate =
+      Number.isFinite(rate) && rate > 0 ? rate : 1;
+  });
+
+  const retry = () => {
+    if (state.selectedId) {
+      selectChannel(state.selectedId);
+    }
+  };
+
+  $("#retryBtn")?.addEventListener("click", retry);
+  $("#errorRetryBtn")?.addEventListener("click", retry);
+
+  updatePlayPauseIcon();
 }
 
-/* 10. CONTROLES */
+/* ============================================================
+   10. FAVORITOS
+   ============================================================ */
 
-function setupControls() {
+function updateFavButton(channel) {
+  if (!channel) return;
 
-  $("#heroFavBtn")?.addEventListener(
-    "click",
-    toggleFavorite
-  );
+  const button = $("#heroFavBtn");
+  const label = $("#heroFavLabel");
 
-  $("#searchInput")?.addEventListener(
-    "input",
-    renderChannels
-  );
+  const isFavorite = state.favorites.has(channel.id);
 
-  $("#mainNav")?.addEventListener("click", event => {
+  if (button) {
+    button.setAttribute("aria-pressed", String(isFavorite));
+  }
 
+  if (label) {
+    label.textContent = isFavorite
+      ? "Nos favoritos"
+      : "Favoritar";
+  }
+}
+
+function setupFavorites() {
+  const button = $("#heroFavBtn");
+
+  if (!button) return;
+
+  button.addEventListener("click", () => {
+    if (!state.selectedId) return;
+
+    const id = state.selectedId;
+
+    if (state.favorites.has(id)) {
+      state.favorites.delete(id);
+    } else {
+      state.favorites.add(id);
+    }
+
+    saveFavorites();
+
+    const channel = getChannel(id);
+
+    updateFavButton(channel);
+    renderGrid();
+    renderShelves();
+  });
+}
+
+/* ============================================================
+   11. NAVEGAÇÃO E BUSCA
+   ============================================================ */
+
+function setupNav() {
+  const nav = $("#mainNav");
+  const search = $("#searchInput");
+
+  nav?.addEventListener("click", event => {
     const button = event.target.closest(".topnav__item");
 
     if (!button) return;
 
-    document.querySelectorAll(".topnav__item")
-      .forEach(item => {
-        item.classList.toggle("is-active", item === button);
-      });
+    const category = button.dataset.category;
 
-    renderChannels();
+    if (!category) return;
 
+    state.category = category;
+
+    nav.querySelectorAll(".topnav__item").forEach(item => {
+      const active = item === button;
+
+      item.classList.toggle("is-active", active);
+
+      if (active) {
+        item.setAttribute("aria-current", "page");
+      } else {
+        item.removeAttribute("aria-current");
+      }
+    });
+
+    renderGrid();
   });
 
-  $("#playPauseBtn")?.addEventListener("click", () => {
-
-    if (video.paused) {
-      video.play().catch(console.error);
-    } else {
-      video.pause();
-    }
-
+  search?.addEventListener("input", event => {
+    state.search = event.target.value || "";
+    renderGrid();
   });
 
-  video.addEventListener("playing", () => {
-    playerState("none");
-  });
-
-  video.addEventListener("error", () => {
-
-    if (!video.currentSrc) return;
-
-    console.error("Erro de vídeo:", video.error);
-
-    playerState(
-      "error",
-      "Erro ao reproduzir a transmissão."
+  $("#profileBtn")?.addEventListener("click", () => {
+    alert(
+      `Perfil "N" — ${state.favorites.size} canal(is) favorito(s).`
     );
-
   });
-
-  $("#retryBtn")?.addEventListener("click", () => {
-    if (selectedChannel) playChannel(selectedChannel);
-  });
-
-  $("#errorRetryBtn")?.addEventListener("click", () => {
-    if (selectedChannel) playChannel(selectedChannel);
-  });
-
-  $("#muteBtn")?.addEventListener("click", () => {
-    video.muted = !video.muted;
-  });
-
-  $("#volumeSlider")?.addEventListener("input", event => {
-    video.volume = Number(event.target.value) / 100;
-    video.muted = video.volume === 0;
-  });
-
-  $("#fullscreenBtn")?.addEventListener("click", () => {
-
-    const shell = $("#playerShell");
-
-    if (document.fullscreenElement) {
-      document.exitFullscreen();
-    } else {
-      shell?.requestFullscreen();
-    }
-
-  });
-
-  $("#speedSelect")?.addEventListener("change", event => {
-    video.playbackRate = Number(event.target.value) || 1;
-  });
-
 }
 
-/* 11. INICIAR APP */
+/* ============================================================
+   12. NAVEGAÇÃO PELO TECLADO
+   ============================================================ */
 
-async function init() {
+function gridColumns() {
+  const grid = $("#channelGrid");
+
+  if (!grid || !grid.children.length) return 1;
+
+  const first = grid.children[0].getBoundingClientRect();
+
+  if (!first.width) return 1;
+
+  let columns = 1;
+
+  for (let i = 1; i < grid.children.length; i++) {
+    const item = grid.children[i].getBoundingClientRect();
+
+    if (Math.abs(item.top - first.top) > 5) break;
+
+    columns++;
+  }
+
+  return Math.max(1, columns);
+}
+
+function setupKeyboard() {
+  document.addEventListener("keydown", event => {
+    const active = document.activeElement;
+
+    const typing = active &&
+      ["INPUT", "TEXTAREA", "SELECT"].includes(active.tagName);
+
+    if (typing) return;
+
+    if (event.key === " " && active?.classList.contains("card")) {
+      return;
+    }
+
+    if (event.key === " " && !typing) {
+      event.preventDefault();
+      $("#playPauseBtn")?.click();
+      return;
+    }
+
+    switch (event.key) {
+      case "ArrowRight":
+      case "ArrowLeft":
+      case "ArrowUp":
+      case "ArrowDown": {
+        const cards = [
+          ...document.querySelectorAll("#channelGrid .card")
+        ];
+
+        if (!cards.length) return;
+
+        event.preventDefault();
+
+        const index = cards.indexOf(active);
+        const columns = gridColumns();
+
+        let next = index;
+
+        if (index === -1) {
+          next = 0;
+        } else if (event.key === "ArrowRight") {
+          next = Math.min(index + 1, cards.length - 1);
+        } else if (event.key === "ArrowLeft") {
+          next = Math.max(index - 1, 0);
+        } else if (event.key === "ArrowDown") {
+          next = Math.min(index + columns, cards.length - 1);
+        } else if (event.key === "ArrowUp") {
+          next = Math.max(index - columns, 0);
+        }
+
+        cards[next].focus();
+
+        cards[next].scrollIntoView({
+          block: "nearest",
+          behavior: "smooth"
+        });
+
+        break;
+      }
+
+      case "Escape":
+        if (document.fullscreenElement) {
+          document.exitFullscreen().catch(() => {});
+        }
+
+        $("#searchInput")?.blur();
+        break;
+
+      case "f":
+      case "F":
+        $("#fullscreenBtn")?.click();
+        break;
+
+      case "m":
+      case "M":
+        $("#muteBtn")?.click();
+        break;
+    }
+  });
+}
+
+/* ============================================================
+   13. INICIALIZAÇÃO
+   ============================================================ */
+
+function init() {
+  if (window.novaTVInitialized) return;
+
+  window.novaTVInitialized = true;
 
   if (!video) {
-    console.error("Elemento #video não encontrado no HTML.");
-    return;
-  }
-
-  setupControls();
-
-  const connected = await checkServer();
-
-  if (!connected) {
-    playerState(
-      "error",
-      "O servidor de streaming está indisponível."
+    console.error(
+      "NovaTV: elemento <video id='video'> não encontrado."
     );
-    return;
   }
 
-  await loadChannels();
+  startClock();
 
+  setupPlayerControls();
+  setupFavorites();
+  setupNav();
+  setupKeyboard();
+
+  renderGrid();
+  renderShelves();
+
+  const firstChannel =
+    CHANNELS.find(channel => channel.isLive) ||
+    CHANNELS[0];
+
+  if (!firstChannel) return;
+
+  state.selectedId = firstChannel.id;
+
+  setText("#heroTitle", firstChannel.name);
+  setText("#heroDesc", firstChannel.desc);
+
+  setHidden("#heroLiveTag", !firstChannel.isLive);
+  setHidden("#liveBadge", true);
+
+  updateFavButton(firstChannel);
+  renderEpg(firstChannel);
+
+  renderGrid();
+  renderShelves();
+
+  showPlayerState("noUrl");
 }
 
-document.addEventListener("DOMContentLoaded", init);
-
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", init, { once: true });
+} else {
+  init();
+}
