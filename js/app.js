@@ -3,20 +3,22 @@
 
 /* ============================================================
    NOVATV — APLICAÇÃO PRINCIPAL
-   Backend Node.js + API REST + Player HLS/MP4
+   Frontend: GitHub Pages
+   Backend: Node.js + API REST
+   Player: HLS.js + HTML5 Video
 
    Recursos:
-   - Carregamento automático da playlist M3U pela API
-   - Player HLS com hls.js
+   - Carregamento dos canais pela API
+   - Reprodução HLS (.m3u8)
    - Reprodução MP4
-   - Busca de canais
-   - Categorias
-   - Favoritos persistentes
+   - Busca e categorias
+   - Favoritos
    - Histórico da sessão
    - EPG
    - Navegação por teclado
-   - Tela de erro
    - Reconexão automática
+   - Timeout de carregamento
+   - Diagnóstico de erros no Console
    ============================================================ */
 
 
@@ -30,9 +32,17 @@ const API_BASE_URL =
 const API_CHANNELS =
     `${API_BASE_URL.replace(/\/+$/, "")}/api/channels`;
 
+const CONFIG = {
+    apiTimeout: 15000,
+    manifestTimeout: 25000,
+    playbackTimeout: 30000,
+    retryDelay: 4000,
+    maxRetries: 3
+};
+
 
 /* ============================================================
-   2. ESTADO DA APLICAÇÃO
+   2. ESTADO
    ============================================================ */
 
 let CHANNELS = [];
@@ -45,15 +55,15 @@ const state = {
     hls: null,
 
     favorites: new Set(loadFavorites()),
-
     watching: [],
 
     requestId: 0,
 
     retryCount: 0,
-    maxRetries: 3,
     retryTimer: null,
+    startupTimer: null,
 
+    mediaRecoveryAttempted: false,
     destroyed: false
 };
 
@@ -75,6 +85,21 @@ const $ = selector =>
 
 const $$ = selector =>
     [...document.querySelectorAll(selector)];
+
+
+function log(...args) {
+    console.log("[NOVATV]", ...args);
+}
+
+
+function warn(...args) {
+    console.warn("[NOVATV]", ...args);
+}
+
+
+function errorLog(...args) {
+    console.error("[NOVATV]", ...args);
+}
 
 
 function el(tag, className = "", text = null) {
@@ -102,16 +127,17 @@ function loadFavorites() {
         );
 
         return Array.isArray(data)
-            ? data.filter(id => typeof id === "string")
+            ? data.map(String)
             : [];
 
-    } catch (error) {
+    } catch (err) {
 
-        console.warn("Erro ao carregar favoritos:", error);
+        warn("Não foi possível carregar favoritos:", err);
 
         return [];
 
     }
+
 }
 
 
@@ -124,9 +150,9 @@ function saveFavorites() {
             JSON.stringify([...state.favorites])
         );
 
-    } catch (error) {
+    } catch (err) {
 
-        console.warn("Erro ao salvar favoritos:", error);
+        warn("Não foi possível salvar favoritos:", err);
 
     }
 
@@ -136,30 +162,27 @@ function saveFavorites() {
 function getChannel(id) {
 
     return CHANNELS.find(
-        channel => channel.id === id
+        channel => channel.id === String(id)
     ) || null;
 
 }
 
 
-function validarURL(url) {
+function validarURL(value) {
 
-    if (typeof url !== "string" || !url.trim()) {
+    if (typeof value !== "string" || !value.trim()) {
         return "";
     }
 
     try {
 
-        const parsed = new URL(url.trim());
+        const url = new URL(value.trim());
 
-        if (
-            parsed.protocol !== "http:" &&
-            parsed.protocol !== "https:"
-        ) {
+        if (!["http:", "https:"].includes(url.protocol)) {
             return "";
         }
 
-        return parsed.href;
+        return url.href;
 
     } catch {
 
@@ -177,6 +200,49 @@ function normalizarTexto(value) {
         .replace(/[\u0300-\u036f]/g, "")
         .toLowerCase()
         .trim();
+
+}
+
+
+function obterCampo(obj, campos) {
+
+    for (const campo of campos) {
+
+        const valor = obj?.[campo];
+
+        if (
+            valor !== undefined &&
+            valor !== null &&
+            String(valor).trim() !== ""
+        ) {
+            return valor;
+        }
+
+    }
+
+    return "";
+
+}
+
+
+function limparTimers() {
+
+    if (state.retryTimer) {
+        clearTimeout(state.retryTimer);
+        state.retryTimer = null;
+    }
+
+    if (state.startupTimer) {
+        clearTimeout(state.startupTimer);
+        state.startupTimer = null;
+    }
+
+}
+
+
+function limitarTexto(value, max = 500) {
+
+    return String(value || "").slice(0, max);
 
 }
 
@@ -200,7 +266,12 @@ function prepararCanais(canais) {
         }
 
         const grupo = normalizarTexto(
-            canal.group || canal.groupTitle || ""
+            obterCampo(canal, [
+                "group",
+                "groupTitle",
+                "group-title",
+                "category"
+            ])
         );
 
         let categoria = "aovivo";
@@ -222,7 +293,10 @@ function prepararCanais(canais) {
         }
 
         let id = String(
-            canal.id || `canal-${index + 1}`
+            obterCampo(canal, [
+                "id",
+                "tvg-id"
+            ]) || `canal-${index + 1}`
         );
 
         if (ids.has(id)) {
@@ -232,46 +306,47 @@ function prepararCanais(canais) {
         ids.add(id);
 
         const nome = String(
-            canal.name ||
-            canal.title ||
-            `Canal ${index + 1}`
+            obterCampo(canal, [
+                "name",
+                "title",
+                "tvg-name"
+            ]) || `Canal ${index + 1}`
         );
 
         const url = validarURL(
-            canal.url ||
-            canal.src ||
-            canal.stream ||
-            ""
+            obterCampo(canal, [
+                "url",
+                "src",
+                "stream",
+                "file"
+            ])
+        );
+
+        const logo = validarURL(
+            obterCampo(canal, [
+                "logo",
+                "image",
+                "tvg-logo"
+            ])
         );
 
         return {
-
             id,
-
-            name: nome,
-
+            name: limitarTexto(nome, 150),
             category: categoria,
-
             isLive: categoria === "aovivo",
-
             url,
-
-            logo: validarURL(
-                canal.logo ||
-                canal.image ||
-                ""
+            logo,
+            desc: limitarTexto(
+                obterCampo(canal, [
+                    "desc",
+                    "description"
+                ]) || `Transmissão do canal ${nome}.`,
+                500
             ),
-
-            desc: String(
-                canal.desc ||
-                canal.description ||
-                `Transmissão do canal ${nome}.`
-            ),
-
             epg: Array.isArray(canal.epg)
                 ? canal.epg
                 : []
-
         };
 
     }).filter(Boolean);
@@ -280,77 +355,110 @@ function prepararCanais(canais) {
 
 
 /* ============================================================
-   5. CONEXÃO COM BACKEND NODE.JS
+   5. BACKEND — CARREGAMENTO DA API
    ============================================================ */
 
 async function carregarCanaisAPI() {
 
-    console.log("Conectando ao backend NovaTV...");
+    log("Conectando ao backend:", API_BASE_URL);
+
+    const controller = new AbortController();
+
+    const timeout = setTimeout(
+        () => controller.abort(),
+        CONFIG.apiTimeout
+    );
 
     try {
 
         const resposta = await fetch(API_CHANNELS, {
-
             method: "GET",
-
             headers: {
                 Accept: "application/json"
             },
-
-            cache: "no-store"
-
+            cache: "no-store",
+            signal: controller.signal
         });
 
+        log("Resposta da API:", resposta.status);
+
         if (!resposta.ok) {
-
-            throw new Error(
-                `Erro HTTP ${resposta.status}`
-            );
-
+            throw new Error(`HTTP ${resposta.status}`);
         }
 
         const dados = await resposta.json();
 
-        const lista = Array.isArray(dados)
-            ? dados
-            : dados?.channels;
+        let lista = [];
 
-        if (!Array.isArray(lista)) {
+        if (Array.isArray(dados)) {
+
+            lista = dados;
+
+        } else if (Array.isArray(dados?.channels)) {
+
+            lista = dados.channels;
+
+        } else if (Array.isArray(dados?.data)) {
+
+            lista = dados.data;
+
+        } else if (Array.isArray(dados?.items)) {
+
+            lista = dados.items;
+
+        } else {
 
             throw new Error(
-                "A API não retornou uma lista válida de canais."
+                "Formato da API não reconhecido. Esperado um array de canais."
             );
 
         }
 
         CHANNELS = prepararCanais(lista);
 
-        console.log(
-            `${CHANNELS.length} canais carregados.`
-        );
+        log("Canais recebidos:", lista.length);
+        log("Canais válidos:", CHANNELS.length);
+
+        if (CHANNELS.length !== lista.length) {
+            warn("Alguns registros foram ignorados durante a preparação.");
+        }
 
         atualizarHeroStatus(
             "NovaTV",
             `${CHANNELS.length} canais disponíveis.`
         );
 
-        return true;
+        return CHANNELS.length > 0;
 
-    } catch (error) {
+    } catch (err) {
 
-        console.error(
-            "Erro ao conectar com o backend:",
-            error
-        );
+        if (err.name === "AbortError") {
+
+            errorLog(
+                "Tempo limite ao conectar com a API."
+            );
+
+        } else {
+
+            errorLog(
+                "Falha ao carregar a API:",
+                err
+            );
+
+        }
 
         CHANNELS = [];
 
         atualizarHeroStatus(
             "Backend indisponível",
-            "Não foi possível carregar os canais. Verifique o Node.js, o Cloudflare Tunnel e a API."
+            "Não foi possível carregar os canais. Verifique o Node.js, o endereço do Tunnel e a API."
         );
 
         return false;
+
+    } finally {
+
+        clearTimeout(timeout);
 
     }
 
@@ -359,16 +467,11 @@ async function carregarCanaisAPI() {
 
 function atualizarHeroStatus(titulo, descricao) {
 
-    const heroTitle = $("#heroTitle");
-    const heroDesc = $("#heroDesc");
+    const title = $("#heroTitle");
+    const desc = $("#heroDesc");
 
-    if (heroTitle) {
-        heroTitle.textContent = titulo;
-    }
-
-    if (heroDesc) {
-        heroDesc.textContent = descricao;
-    }
+    if (title) title.textContent = titulo;
+    if (desc) desc.textContent = descricao;
 
 }
 
@@ -422,17 +525,16 @@ function startClock() {
 
 function matchesFilters(channel) {
 
-    const category = state.category;
-
     let categoryOK = true;
 
-    if (category === "favoritos") {
+    if (state.category === "favoritos") {
 
         categoryOK = state.favorites.has(channel.id);
 
-    } else if (category !== "inicio") {
+    } else if (state.category !== "inicio") {
 
-        categoryOK = channel.category === category;
+        categoryOK =
+            channel.category === state.category;
 
     }
 
@@ -450,7 +552,7 @@ function matchesFilters(channel) {
 
 
 /* ============================================================
-   8. CARTÕES DOS CANAIS
+   8. CARTÕES
    ============================================================ */
 
 function channelCard(channel) {
@@ -458,9 +560,7 @@ function channelCard(channel) {
     const card = el("button", "card");
 
     card.type = "button";
-
     card.dataset.id = channel.id;
-
     card.setAttribute("role", "listitem");
 
     card.setAttribute(
@@ -479,9 +579,7 @@ function channelCard(channel) {
         const logo = el("img", "card__logo");
 
         logo.src = channel.logo;
-
         logo.alt = channel.name;
-
         logo.loading = "lazy";
 
         logo.onerror = () => logo.remove();
@@ -501,27 +599,21 @@ function channelCard(channel) {
     }
 
     if (channel.isLive) {
-
         thumb.appendChild(
             el("span", "card__live", "AO VIVO")
         );
-
     }
 
     if (state.favorites.has(channel.id)) {
-
         thumb.appendChild(
             el("span", "card__fav", "♥")
         );
-
     }
 
     if (state.selectedId === channel.id) {
-
         thumb.appendChild(
             el("span", "card__playing", "▶")
         );
-
     }
 
     card.appendChild(thumb);
@@ -548,9 +640,7 @@ function channelCard(channel) {
         )
     );
 
-    meta.appendChild(
-        el("span", "dot")
-    );
+    meta.appendChild(el("span", "dot"));
 
     meta.appendChild(
         el(
@@ -565,11 +655,9 @@ function channelCard(channel) {
     const current = currentProgram(channel);
 
     if (current) {
-
         body.appendChild(
             el("p", "card__now", `Agora: ${current}`)
         );
-
     }
 
     card.appendChild(body);
@@ -584,7 +672,7 @@ function channelCard(channel) {
 
 
 /* ============================================================
-   9. RENDERIZAÇÃO DA GRADE
+   9. RENDERIZAÇÃO
    ============================================================ */
 
 function renderGrid() {
@@ -607,18 +695,12 @@ function renderGrid() {
     const title = $("#gridTitle");
 
     if (title) {
-
         title.textContent =
             CATEGORY_LABELS[state.category] || "Canais";
-
     }
 
 }
 
-
-/* ============================================================
-   10. HISTÓRICO E RECOMENDAÇÕES
-   ============================================================ */
 
 function renderShelves() {
 
@@ -628,14 +710,14 @@ function renderShelves() {
 
     if (watching && watchingRow) {
 
-        const watchList = state.watching
+        const list = state.watching
             .map(getChannel)
             .filter(Boolean);
 
-        watching.hidden = watchList.length === 0;
+        watching.hidden = list.length === 0;
 
         watchingRow.replaceChildren(
-            ...watchList.map(channelCard)
+            ...list.map(channelCard)
         );
 
     }
@@ -659,14 +741,12 @@ function renderShelves() {
 
 
 /* ============================================================
-   11. EPG
+   10. EPG
    ============================================================ */
 
 function parseStart(time) {
 
-    if (typeof time !== "string") {
-        return null;
-    }
+    if (typeof time !== "string") return null;
 
     const match = time.match(/^(\d{1,2}):(\d{2})$/);
 
@@ -691,9 +771,7 @@ function parseStart(time) {
 
 function currentProgram(channel) {
 
-    if (!Array.isArray(channel.epg)) {
-        return null;
-    }
+    if (!Array.isArray(channel.epg)) return null;
 
     const programs = channel.epg
         .filter(item =>
@@ -709,7 +787,7 @@ function currentProgram(channel) {
 
     const now = new Date();
 
-    const minutesNow =
+    const currentMinutes =
         now.getHours() * 60 + now.getMinutes();
 
     for (let i = 0; i < programs.length; i++) {
@@ -721,12 +799,10 @@ function currentProgram(channel) {
             : 1440;
 
         if (
-            minutesNow >= start &&
-            minutesNow < end
+            currentMinutes >= start &&
+            currentMinutes < end
         ) {
-
             return String(programs[i][1]);
-
         }
 
     }
@@ -745,11 +821,8 @@ function renderEpg(channel) {
     if (!section || !timeline) return;
 
     if (!channel.epg || !channel.epg.length) {
-
         section.hidden = true;
-
         return;
-
     }
 
     if (channelName) {
@@ -760,7 +833,7 @@ function renderEpg(channel) {
 
     const now = new Date();
 
-    const minutesNow =
+    const currentMinutes =
         now.getHours() * 60 + now.getMinutes();
 
     const programs = channel.epg
@@ -782,7 +855,10 @@ function renderEpg(channel) {
                 ? parseStart(programs[index + 1][0])
                 : 1440;
 
-            return minutesNow >= start && minutesNow < end;
+            return (
+                currentMinutes >= start &&
+                currentMinutes < end
+            );
 
         }
     );
@@ -792,13 +868,9 @@ function renderEpg(channel) {
         const item = el("div", "epg__item");
 
         if (index === currentIndex) {
-
             item.classList.add("epg__item--current");
-
         } else if (index === currentIndex + 1) {
-
             item.classList.add("epg__item--next");
-
         }
 
         item.appendChild(
@@ -810,11 +882,9 @@ function renderEpg(channel) {
         );
 
         if (index === currentIndex) {
-
             item.appendChild(
                 el("span", "epg__badge", "NO AR AGORA")
             );
-
         }
 
         timeline.appendChild(item);
@@ -827,7 +897,7 @@ function renderEpg(channel) {
 
 
 /* ============================================================
-   12. PLAYER
+   11. PLAYER — ESTADOS
    ============================================================ */
 
 function getVideo() {
@@ -855,14 +925,16 @@ function showPlayerState(which) {
 }
 
 
-function clearRetryTimer() {
+function clearPlayerTimers() {
 
     if (state.retryTimer) {
-
         clearTimeout(state.retryTimer);
-
         state.retryTimer = null;
+    }
 
+    if (state.startupTimer) {
+        clearTimeout(state.startupTimer);
+        state.startupTimer = null;
     }
 
 }
@@ -870,15 +942,34 @@ function clearRetryTimer() {
 
 function destroyHls() {
 
-    if (state.hls) {
+    if (!state.hls) return;
 
-        try {
-            state.hls.destroy();
-        } catch (error) {
-            console.warn("Erro ao destruir HLS:", error);
-        }
+    try {
+        state.hls.destroy();
+    } catch (err) {
+        warn("Erro ao encerrar HLS:", err);
+    }
 
-        state.hls = null;
+    state.hls = null;
+
+}
+
+
+function stopCurrentPlayback() {
+
+    clearPlayerTimers();
+
+    destroyHls();
+
+    const video = getVideo();
+
+    if (video) {
+
+        video.pause();
+
+        video.removeAttribute("src");
+
+        video.load();
 
     }
 
@@ -889,9 +980,9 @@ function isHlsSource(url) {
 
     try {
 
-        return new URL(url).pathname
-            .toLowerCase()
-            .endsWith(".m3u8");
+        const pathname = new URL(url).pathname.toLowerCase();
+
+        return pathname.endsWith(".m3u8");
 
     } catch {
 
@@ -904,9 +995,11 @@ function isHlsSource(url) {
 
 function showError(message) {
 
-    clearRetryTimer();
+    clearPlayerTimers();
 
     destroyHls();
+
+    errorLog(message);
 
     const errorMessage = $("#errorMessage");
 
@@ -942,7 +1035,7 @@ function updatePlayPauseIcon() {
 
 
 /* ============================================================
-   13. RECUPERAÇÃO DE TRANSMISSÃO
+   12. RECONEXÃO AUTOMÁTICA
    ============================================================ */
 
 function recoverStream(message) {
@@ -951,10 +1044,13 @@ function recoverStream(message) {
 
     if (!video || !state.selectedId) return;
 
-    if (state.retryCount >= state.maxRetries) {
+    if (state.retryTimer) return;
+
+    if (state.retryCount >= CONFIG.maxRetries) {
 
         showError(
-            message || "Não foi possível recuperar a transmissão."
+            message ||
+            "Não foi possível recuperar a transmissão."
         );
 
         return;
@@ -963,15 +1059,19 @@ function recoverStream(message) {
 
     state.retryCount++;
 
-    console.warn(
-        `Tentativa de reconexão ${state.retryCount}/${state.maxRetries}`
+    warn(
+        `Reconexão ${state.retryCount}/${CONFIG.maxRetries}:`,
+        message
     );
 
     showPlayerState("loading");
 
-    clearRetryTimer();
+    clearTimeout(state.startupTimer);
+    state.startupTimer = null;
 
     state.retryTimer = setTimeout(() => {
+
+        state.retryTimer = null;
 
         const channel = getChannel(state.selectedId);
 
@@ -979,13 +1079,50 @@ function recoverStream(message) {
 
         iniciarReproducao(channel, true);
 
-    }, 3000);
+    }, CONFIG.retryDelay);
 
 }
 
 
 /* ============================================================
-   14. INICIAR HLS / MP4
+   13. WATCHDOG DO PLAYER
+   ============================================================ */
+
+function startPlaybackWatchdog(requestId, channel) {
+
+    clearTimeout(state.startupTimer);
+
+    state.startupTimer = setTimeout(() => {
+
+        if (requestId !== state.requestId) return;
+
+        const video = getVideo();
+
+        if (!video) return;
+
+        if (
+            video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+            !video.paused
+        ) {
+            return;
+        }
+
+        warn(
+            "Tempo limite de inicialização excedido:",
+            channel.name
+        );
+
+        recoverStream(
+            "A transmissão demorou muito para iniciar. Verifique o manifesto e os segmentos do vídeo."
+        );
+
+    }, CONFIG.playbackTimeout);
+
+}
+
+
+/* ============================================================
+   14. REPRODUÇÃO
    ============================================================ */
 
 function attachSource(channel) {
@@ -993,96 +1130,87 @@ function attachSource(channel) {
     const video = getVideo();
 
     if (!video) {
-
-        console.error("Elemento #video não encontrado.");
-
+        errorLog("Elemento #video não encontrado no HTML.");
         return false;
-
     }
 
-    // Encerra a transmissão anterior.
-    destroyHls();
+    stopCurrentPlayback();
 
-    clearRetryTimer();
-
-    // Identifica esta tentativa de reprodução.
     const requestId = ++state.requestId;
 
+    state.mediaRecoveryAttempted = false;
+
     const url = validarURL(channel.url);
-
-    video.pause();
-
-    video.removeAttribute("src");
-
-    video.load();
 
     if (!url) {
 
         showPlayerState("noUrl");
 
-        console.error("URL inválida para:", channel.name);
+        errorLog(
+            "Canal sem endereço válido:",
+            channel.name
+        );
 
         return false;
 
     }
 
+    log("Carregando canal:", channel.name);
+    log("Tipo de transmissão:", isHlsSource(url) ? "HLS" : "MP4 / nativo");
+
     showPlayerState("loading");
 
-    // Executa a reprodução somente quando estiver pronta.
-    function playWhenReady() {
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = "auto";
+
+    startPlaybackWatchdog(requestId, channel);
+
+
+    function requestPlayback() {
 
         if (requestId !== state.requestId) return;
-
-        video.muted = true;
 
         video.play()
             .then(() => {
 
                 if (requestId !== state.requestId) return;
 
-                console.log(
-                    "[PLAYER] Reprodução iniciada:",
-                    channel.name
-                );
-
-                showPlayerState("none");
-
-                state.retryCount = 0;
-
-                clearRetryTimer();
-
-                updatePlayPauseIcon();
+                log("Solicitação de reprodução aceita:", channel.name);
 
             })
-            .catch(error => {
+            .catch(err => {
 
                 if (requestId !== state.requestId) return;
 
-                console.warn(
-                    "[PLAYER] Falha ao iniciar reprodução:",
-                    error
-                );
+                warn("Falha ao iniciar reprodução:", err);
 
-                if (error.name === "NotAllowedError") {
+                if (err.name === "NotAllowedError") {
 
                     showPlayerState("none");
 
-                    updatePlayPauseIcon();
-
-                    console.warn(
-                        "O navegador bloqueou a reprodução automática. Pressione Play."
+                    warn(
+                        "Reprodução automática bloqueada. Pressione o botão Play."
                     );
 
                 } else {
 
-                    showError(
-                        "Não foi possível iniciar a transmissão: " +
-                        error.message
+                    recoverStream(
+                        "O navegador não conseguiu iniciar a reprodução."
                     );
 
                 }
 
             });
+
+    }
+
+
+    function onReady() {
+
+        if (requestId !== state.requestId) return;
+
+        requestPlayback();
 
     }
 
@@ -1093,19 +1221,44 @@ function attachSource(channel) {
 
     if (isHlsSource(url)) {
 
-        // HLS nativo.
-        if (
-            video.canPlayType("application/vnd.apple.mpegurl")
-        ) {
+        // Reprodução HLS nativa, quando disponível.
+        const nativeHls = video.canPlayType(
+            "application/vnd.apple.mpegurl"
+        );
+
+        if (nativeHls) {
+
+            log("Utilizando suporte HLS nativo.");
 
             video.addEventListener(
                 "loadedmetadata",
-                playWhenReady,
+                onReady,
+                { once: true }
+            );
+
+            video.addEventListener(
+                "error",
+                () => {
+
+                    if (requestId !== state.requestId) return;
+
+                    const code = video.error?.code;
+
+                    errorLog(
+                        "Erro HLS nativo:",
+                        code,
+                        video.error?.message
+                    );
+
+                    recoverStream(
+                        "Falha ao carregar a transmissão HLS nativa."
+                    );
+
+                },
                 { once: true }
             );
 
             video.src = url;
-
             video.load();
 
             return true;
@@ -1113,11 +1266,13 @@ function attachSource(channel) {
         }
 
 
-        // HLS usando hls.js.
+        // Reprodução usando HLS.js.
         if (
             window.Hls &&
             window.Hls.isSupported()
         ) {
+
+            log("Utilizando HLS.js.");
 
             const hls = new window.Hls({
 
@@ -1129,30 +1284,40 @@ function attachSource(channel) {
 
                 maxBufferLength: 30,
 
-                manifestLoadingTimeOut: 20000,
+                maxBufferSize: 60 * 1000 * 1000,
 
-                fragLoadingTimeOut: 20000,
+                manifestLoadingTimeOut: 20000,
 
                 manifestLoadingMaxRetry: 2,
 
-                fragLoadingMaxRetry: 3
+                manifestLoadingRetryDelay: 1000,
+
+                levelLoadingTimeOut: 20000,
+
+                levelLoadingMaxRetry: 2,
+
+                fragLoadingTimeOut: 20000,
+
+                fragLoadingMaxRetry: 3,
+
+                startFragPrefetch: true
 
             });
 
             state.hls = hls;
 
 
-            // Tratamento de erros HLS.
             hls.on(
                 window.Hls.Events.ERROR,
                 (_event, data) => {
 
                     if (requestId !== state.requestId) return;
 
-                    console.error("[HLS] Erro:", {
+                    errorLog("Erro HLS:", {
                         type: data.type,
                         details: data.details,
                         fatal: data.fatal,
+                        url: data.url,
                         response: data.response
                     });
 
@@ -1160,73 +1325,128 @@ function attachSource(channel) {
 
 
                     if (
-                        data.type === window.Hls.ErrorTypes.NETWORK_ERROR
+                        data.type ===
+                        window.Hls.ErrorTypes.NETWORK_ERROR
                     ) {
 
                         recoverStream(
-                            "Falha de rede ao carregar a transmissão."
+                            `Falha de rede HLS: ${data.details}`
                         );
 
-                    } else if (
-                        data.type === window.Hls.ErrorTypes.MEDIA_ERROR
+                        return;
+
+                    }
+
+
+                    if (
+                        data.type ===
+                        window.Hls.ErrorTypes.MEDIA_ERROR
                     ) {
 
-                        console.warn(
-                            "[HLS] Tentando recuperar a mídia."
-                        );
+                        if (!state.mediaRecoveryAttempted) {
 
-                        try {
+                            state.mediaRecoveryAttempted = true;
 
-                            hls.recoverMediaError();
+                            warn("Tentando recuperar erro de mídia.");
 
-                        } catch (error) {
+                            try {
 
-                            console.error(
-                                "[HLS] Falha na recuperação:",
-                                error
-                            );
+                                hls.recoverMediaError();
+
+                            } catch (err) {
+
+                                errorLog(
+                                    "Falha ao recuperar mídia:",
+                                    err
+                                );
+
+                                recoverStream(
+                                    "Não foi possível recuperar a mídia."
+                                );
+
+                            }
+
+                        } else {
 
                             recoverStream(
-                                "Não foi possível recuperar a mídia."
+                                "O erro de mídia persistiu após a recuperação."
                             );
 
                         }
 
-                    } else {
-
-                        showError(
-                            "Falha fatal no HLS: " +
-                            data.details
-                        );
+                        return;
 
                     }
+
+
+                    showError(
+                        `Erro fatal no HLS: ${data.details || data.type}`
+                    );
 
                 }
             );
 
 
-            // Manifesto carregado.
             hls.on(
-                window.Hls.Events.MANIFEST_PARSED,
+                window.Hls.Events.MEDIA_ATTACHED,
                 () => {
 
                     if (requestId !== state.requestId) return;
 
-                    console.log(
-                        "[HLS] Manifesto carregado:",
-                        channel.name
-                    );
+                    log("Mídia conectada ao HLS.js.");
 
-                    playWhenReady();
+                    hls.loadSource(url);
 
                 }
             );
 
 
-            // Anexa a mídia primeiro e depois carrega o manifesto.
-            hls.attachMedia(video);
+            hls.on(
+                window.Hls.Events.MANIFEST_LOADING,
+                () => {
 
-            hls.loadSource(url);
+                    if (requestId !== state.requestId) return;
+
+                    log("Carregando manifesto:", url);
+
+                    showPlayerState("loading");
+
+                }
+            );
+
+
+            hls.on(
+                window.Hls.Events.MANIFEST_PARSED,
+                (_event, data) => {
+
+                    if (requestId !== state.requestId) return;
+
+                    log(
+                        "Manifesto carregado.",
+                        "Qualidades:",
+                        data.levels?.length || 0
+                    );
+
+                    requestPlayback();
+
+                }
+            );
+
+
+            hls.on(
+                window.Hls.Events.FRAG_LOADED,
+                () => {
+
+                    if (requestId !== state.requestId) return;
+
+                    log("Segmento de vídeo recebido.");
+
+                }
+            );
+
+
+            // Primeiro conecta o vídeo.
+            hls.attachMedia(video);
 
             return true;
 
@@ -1234,7 +1454,7 @@ function attachSource(channel) {
 
 
         showError(
-            "HLS não é suportado neste navegador ou hls.js não foi carregado."
+            "Este navegador não oferece suporte ao HLS.js e não possui reprodução HLS nativa."
         );
 
         return false;
@@ -1243,17 +1463,40 @@ function attachSource(channel) {
 
 
     /* --------------------------------------------------------
-       MP4 E FORMATOS NATIVOS
+       MP4 E OUTROS FORMATOS NATIVOS
        -------------------------------------------------------- */
+
+    log("Carregando mídia nativa.");
 
     video.addEventListener(
         "loadedmetadata",
-        playWhenReady,
+        onReady,
+        { once: true }
+    );
+
+    video.addEventListener(
+        "error",
+        () => {
+
+            if (requestId !== state.requestId) return;
+
+            const mediaError = video.error;
+
+            errorLog(
+                "Erro de mídia:",
+                mediaError?.code,
+                mediaError?.message
+            );
+
+            recoverStream(
+                "O arquivo de vídeo não pôde ser carregado."
+            );
+
+        },
         { once: true }
     );
 
     video.src = url;
-
     video.load();
 
     return true;
@@ -1265,22 +1508,12 @@ function iniciarReproducao(channel, reconexao = false) {
 
     if (!channel) return;
 
-    console.log(
-        reconexao
-            ? "[PLAYER] Reconectando:"
-            : "[PLAYER] Iniciando:",
+    log(
+        reconexao ? "Reconectando:" : "Iniciando:",
         channel.name
     );
 
-    const ok = attachSource(channel);
-
-    if (!ok) {
-
-        console.error(
-            "[PLAYER] Não foi possível associar a fonte."
-        );
-
-    }
+    attachSource(channel);
 
 }
 
@@ -1299,7 +1532,7 @@ function selectChannel(id) {
 
     state.retryCount = 0;
 
-    clearRetryTimer();
+    clearPlayerTimers();
 
     if (!state.watching.includes(id)) {
 
@@ -1317,18 +1550,13 @@ function selectChannel(id) {
 
     state.watching = state.watching.slice(0, 6);
 
-    const heroTitle = $("#heroTitle");
-    const heroDesc = $("#heroDesc");
+    atualizarHeroStatus(
+        channel.name,
+        channel.desc
+    );
+
     const heroLiveTag = $("#heroLiveTag");
     const liveBadge = $("#liveBadge");
-
-    if (heroTitle) {
-        heroTitle.textContent = channel.name;
-    }
-
-    if (heroDesc) {
-        heroDesc.textContent = channel.desc;
-    }
 
     if (heroLiveTag) {
         heroLiveTag.hidden = !channel.isLive;
@@ -1360,11 +1588,8 @@ function setupPlayerControls() {
     const video = getVideo();
 
     if (!video) {
-
-        console.warn("Player #video não encontrado.");
-
+        warn("Elemento #video não encontrado.");
         return;
-
     }
 
     const playPause = $("#playPauseBtn");
@@ -1380,13 +1605,8 @@ function setupPlayerControls() {
 
         if (video.paused) {
 
-            video.play().catch(error => {
-
-                console.warn(
-                    "Não foi possível reproduzir:",
-                    error
-                );
-
+            video.play().catch(err => {
+                warn("Falha ao reproduzir:", err);
             });
 
         } else {
@@ -1419,6 +1639,16 @@ function setupPlayerControls() {
         "playing",
         () => {
 
+            log("Vídeo em reprodução.");
+
+            clearTimeout(state.startupTimer);
+            state.startupTimer = null;
+
+            clearTimeout(state.retryTimer);
+            state.retryTimer = null;
+
+            state.retryCount = 0;
+
             showPlayerState("none");
 
             updatePlayPauseIcon();
@@ -1432,7 +1662,11 @@ function setupPlayerControls() {
         () => {
 
             if (video.currentSrc || video.src) {
+
+                log("Aguardando dados de vídeo.");
+
                 showPlayerState("loading");
+
             }
 
         }
@@ -1440,27 +1674,27 @@ function setupPlayerControls() {
 
 
     video.addEventListener(
-        "error",
+        "stalled",
         () => {
 
-            if (!video.currentSrc && !video.src) return;
+            if (video.currentSrc || video.src) {
 
-            // Os erros HLS são tratados pelo hls.js.
-            if (state.hls) return;
+                warn("A transmissão parou de receber dados.");
 
-            const error = video.error;
+                showPlayerState("loading");
 
-            console.error(
-                "[PLAYER] Erro nativo:",
-                error
-            );
+            }
+
+        }
+    );
+
+
+    video.addEventListener(
+        "ended",
+        () => {
 
             if (state.selectedId) {
-
-                recoverStream(
-                    "O vídeo não pôde ser carregado. Verifique a URL, o servidor e o formato."
-                );
-
+                showPlayerState("noSignal");
             }
 
         }
@@ -1483,7 +1717,6 @@ function setupPlayerControls() {
                 const format = seconds => {
 
                     const minutes = Math.floor(seconds / 60);
-
                     const secs = Math.floor(seconds % 60);
 
                     return (
@@ -1501,18 +1734,6 @@ function setupPlayerControls() {
 
                 timeLabel.textContent = "AO VIVO";
 
-            }
-
-        }
-    );
-
-
-    video.addEventListener(
-        "stalled",
-        () => {
-
-            if (video.currentSrc || video.src) {
-                showPlayerState("loading");
             }
 
         }
@@ -1546,10 +1767,8 @@ function setupPlayerControls() {
             video.muted = value === 0;
 
             if (mute) {
-
                 mute.style.opacity =
                     video.muted ? "0.5" : "1";
-
             }
 
         }
@@ -1576,12 +1795,9 @@ function setupPlayerControls() {
 
                 }
 
-            } catch (error) {
+            } catch (err) {
 
-                console.warn(
-                    "Erro ao alternar tela cheia:",
-                    error
-                );
+                warn("Erro na tela cheia:", err);
 
             }
 
@@ -1606,15 +1822,13 @@ function setupPlayerControls() {
 
         const channel = getChannel(state.selectedId);
 
-        if (channel) {
+        if (!channel) return;
 
-            state.retryCount = 0;
+        state.retryCount = 0;
 
-            clearRetryTimer();
+        clearPlayerTimers();
 
-            iniciarReproducao(channel);
-
-        }
+        iniciarReproducao(channel);
 
     }
 
@@ -1635,10 +1849,8 @@ function setupPlayerControls() {
         () => {
 
             if (mute) {
-
                 mute.style.opacity =
                     video.muted ? "0.5" : "1";
-
             }
 
         }
@@ -1661,15 +1873,15 @@ function updateFavButton(channel) {
 
     if (!button || !label) return;
 
-    const isFavorite =
+    const favorite =
         state.favorites.has(channel.id);
 
     button.setAttribute(
         "aria-pressed",
-        String(isFavorite)
+        String(favorite)
     );
 
-    label.textContent = isFavorite
+    label.textContent = favorite
         ? "Nos favoritos"
         : "Favoritar";
 
@@ -1691,13 +1903,9 @@ function setupFavorites() {
             const id = state.selectedId;
 
             if (state.favorites.has(id)) {
-
                 state.favorites.delete(id);
-
             } else {
-
                 state.favorites.add(id);
-
             }
 
             saveFavorites();
@@ -1725,9 +1933,7 @@ function setupFavorites() {
 function setupNav() {
 
     const mainNav = $("#mainNav");
-
     const searchInput = $("#searchInput");
-
     const profileBtn = $("#profileBtn");
 
 
@@ -1735,13 +1941,15 @@ function setupNav() {
         "click",
         event => {
 
-            const btn = event.target.closest(
+            const button = event.target.closest(
                 ".topnav__item"
             );
 
-            if (!btn || !mainNav.contains(btn)) return;
+            if (!button || !mainNav.contains(button)) {
+                return;
+            }
 
-            const category = btn.dataset.category;
+            const category = button.dataset.category;
 
             if (!CATEGORY_LABELS[category]) return;
 
@@ -1749,7 +1957,7 @@ function setupNav() {
 
             $$(".topnav__item").forEach(item => {
 
-                const active = item === btn;
+                const active = item === button;
 
                 item.classList.toggle(
                     "is-active",
@@ -1757,16 +1965,9 @@ function setupNav() {
                 );
 
                 if (active) {
-
-                    item.setAttribute(
-                        "aria-current",
-                        "page"
-                    );
-
+                    item.setAttribute("aria-current", "page");
                 } else {
-
                     item.removeAttribute("aria-current");
-
                 }
 
             });
@@ -1848,13 +2049,9 @@ function setupKeyboard() {
             if (typing) {
 
                 if (event.key === "Escape") {
-
                     active.blur();
-
                 } else {
-
                     return;
-
                 }
 
             }
@@ -1884,9 +2081,7 @@ function setupKeyboard() {
                 case "ArrowDown": {
 
                     const cards = [
-                        ...$$(
-                            "#channelGrid .card"
-                        )
+                        ...$$("#channelGrid .card")
                     ];
 
                     if (!cards.length) return;
@@ -1912,10 +2107,7 @@ function setupKeyboard() {
 
                     } else if (event.key === "ArrowLeft") {
 
-                        next = Math.max(
-                            index - 1,
-                            0
-                        );
+                        next = Math.max(index - 1, 0);
 
                     } else if (event.key === "ArrowDown") {
 
@@ -1985,16 +2177,12 @@ function setupKeyboard() {
 
 async function init() {
 
-    console.log("Inicializando NovaTV...");
-
     if (state.destroyed) return;
 
+    log("Inicializando NovaTV...");
 
-    // Relógio.
     startClock();
 
-
-    // Controles.
     setupPlayerControls();
 
     setupFavorites();
@@ -2003,16 +2191,11 @@ async function init() {
 
     setupKeyboard();
 
-
-    // Estado inicial.
     showPlayerState("loading");
 
-
-    // Conexão com backend.
     const conectado = await carregarCanaisAPI();
 
     if (state.destroyed) return;
-
 
     if (!conectado || CHANNELS.length === 0) {
 
@@ -2022,22 +2205,18 @@ async function init() {
 
         showPlayerState("noUrl");
 
-        console.warn(
-            "NovaTV iniciada sem canais. Verifique o backend."
+        warn(
+            "Nenhum canal disponível. Verifique a API."
         );
 
         return;
 
     }
 
-
-    // Renderização.
     renderGrid();
 
     renderShelves();
 
-
-    // Seleciona o primeiro canal sem reproduzir automaticamente.
     const primeiroCanal = CHANNELS[0];
 
     if (primeiroCanal) {
@@ -2050,12 +2229,11 @@ async function init() {
         );
 
         const heroLiveTag = $("#heroLiveTag");
+        const liveBadge = $("#liveBadge");
 
         if (heroLiveTag) {
             heroLiveTag.hidden = !primeiroCanal.isLive;
         }
-
-        const liveBadge = $("#liveBadge");
 
         if (liveBadge) {
             liveBadge.hidden = !primeiroCanal.isLive;
@@ -2073,16 +2251,13 @@ async function init() {
 
     }
 
-
-    console.log(
-        "NovaTV inicializada com sucesso."
-    );
+    log("NovaTV inicializada com sucesso.");
 
 }
 
 
 /* ============================================================
-   21. INICIALIZAÇÃO SEGURA DO DOCUMENTO
+   21. INICIALIZAÇÃO DO DOCUMENTO
    ============================================================ */
 
 if (document.readyState === "loading") {
@@ -2098,3 +2273,21 @@ if (document.readyState === "loading") {
     init();
 
 }
+
+
+/* ============================================================
+   22. ENCERRAMENTO DA PÁGINA
+   ============================================================ */
+
+window.addEventListener(
+    "beforeunload",
+    () => {
+
+        state.destroyed = true;
+
+        clearPlayerTimers();
+
+        destroyHls();
+
+    }
+);
