@@ -967,14 +967,192 @@ function recoverStream(message) {
 
     }, 3000);
 
-}
+/*}
 
 
 /* ============================================================
    14. INICIAR HLS / MP4
    ============================================================ */
 
+
 function attachSource(channel) {
+  const video = getVideo();
+
+  if (!video) return false;
+
+  destroyHls();
+
+  const requestId = ++state.requestId;
+  const url = validarURL(channel.url);
+
+  video.pause();
+  video.removeAttribute("src");
+  video.load();
+
+  if (!url) {
+      showPlayerState("noUrl");
+      return false;
+  }
+
+  showPlayerState("loading");
+
+  // Só tenta reproduzir quando a mídia estiver pronta.
+  function playWhenReady() {
+      if (requestId !== state.requestId) return;
+
+      video.muted = true;
+
+      video.play()
+          .then(() => {
+              if (requestId !== state.requestId) return;
+
+              console.log("Reprodução iniciada:", channel.name);
+              clearRetryTimer();
+              state.retryCount = 0;
+          })
+          .catch(error => {
+              if (requestId !== state.requestId) return;
+
+              console.warn("Falha ao iniciar reprodução:", error);
+
+              if (error.name === "NotAllowedError") {
+                  showPlayerState("none");
+                  console.warn("Clique em Play para iniciar.");
+              } else {
+                  showError(
+                      "O navegador não conseguiu iniciar esta transmissão: " +
+                      error.message
+                  );
+              }
+          });
+  }
+
+  // HLS
+  if (isHlsSource(url)) {
+
+      // HLS nativo do navegador.
+      if (video.canPlayType("application/vnd.apple.mpegurl")) {
+
+          video.addEventListener(
+              "loadedmetadata",
+              playWhenReady,
+              { once: true }
+          );
+
+          video.src = url;
+          video.load();
+
+          return true;
+      }
+
+      // HLS usando hls.js.
+      if (window.Hls && window.Hls.isSupported()) {
+
+          const hls = new window.Hls({
+              enableWorker: true,
+              lowLatencyMode: false,
+              backBufferLength: 30,
+              maxBufferLength: 30,
+              manifestLoadingTimeOut: 20000,
+              fragLoadingTimeOut: 20000
+          });
+
+          state.hls = hls;
+
+          hls.on(window.Hls.Events.ERROR, (_event, data) => {
+
+              if (requestId !== state.requestId) return;
+
+              console.error("[HLS] Erro:", {
+                  type: data.type,
+                  details: data.details,
+                  fatal: data.fatal,
+                  response: data.response
+              });
+
+              if (!data.fatal) return;
+
+              if (
+                  data.type === window.Hls.ErrorTypes.NETWORK_ERROR
+              ) {
+                  recoverStream(
+                      "Falha ao carregar a transmissão. Verifique o servidor."
+                  );
+
+              } else if (
+                  data.type === window.Hls.ErrorTypes.MEDIA_ERROR
+              ) {
+                  console.warn("[HLS] Tentando recuperar mídia.");
+
+                  hls.recoverMediaError();
+
+              } else {
+                  showError(
+                      "Falha fatal no HLS: " + data.details
+                  );
+              }
+          });
+
+          hls.on(
+              window.Hls.Events.MANIFEST_PARSED,
+              () => {
+                  if (requestId !== state.requestId) return;
+
+                  console.log(
+                      "[HLS] Manifesto carregado:",
+                      channel.name
+                  );
+
+                  playWhenReady();
+              }
+          );
+
+          hls.loadSource(url);
+          hls.attachMedia(video);
+
+          return true;
+      }
+
+      showError(
+          "HLS não é suportado neste navegador ou hls.js não foi carregado."
+      );
+
+      return false;
+  }
+
+  // MP4 e outros formatos nativos.
+  video.addEventListener(
+      "loadedmetadata",
+      playWhenReady,
+      { once: true }
+  );
+
+  video.src = url;
+  video.load();
+
+  return true;
+}
+
+
+function iniciarReproducao(channel, reconexao = false) {
+
+  if (!channel) return;
+
+  console.log(
+      reconexao
+          ? "[PLAYER] Reconectando:"
+          : "[PLAYER] Iniciando:",
+      channel.name
+  );
+
+  const ok = attachSource(channel);
+
+  if (!ok) {
+      console.error("[PLAYER] Não foi possível associar a fonte.");
+  }
+}
+
+/*function attachSource(channel) {
 
     const video = getVideo();
 
@@ -1191,7 +1369,7 @@ function iniciarReproducao(channel, reconexao = false) {
 
         });
 
-}
+}*/
 
 
 /* ============================================================
