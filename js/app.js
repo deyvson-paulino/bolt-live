@@ -385,7 +385,7 @@ function attachSource(channel) {
   const url = channel.url;
 
   // Sem URL configurada (placeholder vazio ou não preenchido)
-  if (!url || url.includes("COLE_A_URL_DO_SEU_STREAM_AQUI")) {
+  if (!url || url.includes("https://rbmn-live.akamaized.net/hls/live/590964/BoRB-AT/master_3360.m3u8")) {
     showPlayerState("noUrl");
     return false;
   }
