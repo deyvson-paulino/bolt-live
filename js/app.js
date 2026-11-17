@@ -14,18 +14,15 @@
    - Favoritos persistentes
    - Histórico da sessão
    - EPG
-   - Navegação por teclado e controle remoto
+   - Navegação por teclado
    - Tela de erro
-   - Reconexão de transmissões
+   - Reconexão automática
    ============================================================ */
 
 
 /* ============================================================
    1. CONFIGURAÇÃO
    ============================================================ */
-
-// Endereço público do seu Cloudflare Tunnel.
-// Não coloque /api/channels no final.
 
 const API_BASE_URL =
     "https://nose-highways-agency-butler.trycloudflare.com";
@@ -44,13 +41,19 @@ const state = {
     category: "inicio",
     search: "",
     selectedId: null,
+
     hls: null,
+
     favorites: new Set(loadFavorites()),
+
     watching: [],
+
     requestId: 0,
+
     retryCount: 0,
     maxRetries: 3,
     retryTimer: null,
+
     destroyed: false
 };
 
@@ -67,11 +70,12 @@ const CATEGORY_LABELS = {
    3. UTILITÁRIOS
    ============================================================ */
 
-const $ = (selector) =>
+const $ = selector =>
     document.querySelector(selector);
 
-const $$ = (selector) =>
+const $$ = selector =>
     [...document.querySelectorAll(selector)];
+
 
 function el(tag, className = "", text = null) {
 
@@ -87,6 +91,7 @@ function el(tag, className = "", text = null) {
 
     return node;
 }
+
 
 function loadFavorites() {
 
@@ -109,6 +114,7 @@ function loadFavorites() {
     }
 }
 
+
 function saveFavorites() {
 
     try {
@@ -123,7 +129,9 @@ function saveFavorites() {
         console.warn("Erro ao salvar favoritos:", error);
 
     }
+
 }
+
 
 function getChannel(id) {
 
@@ -132,6 +140,7 @@ function getChannel(id) {
     ) || null;
 
 }
+
 
 function validarURL(url) {
 
@@ -157,7 +166,9 @@ function validarURL(url) {
         return "";
 
     }
+
 }
+
 
 function normalizarTexto(value) {
 
@@ -184,7 +195,13 @@ function prepararCanais(canais) {
 
     return canais.map((canal, index) => {
 
-        const grupo = normalizarTexto(canal.group);
+        if (!canal || typeof canal !== "object") {
+            return null;
+        }
+
+        const grupo = normalizarTexto(
+            canal.group || canal.groupTitle || ""
+        );
 
         let categoria = "aovivo";
 
@@ -208,8 +225,6 @@ function prepararCanais(canais) {
             canal.id || `canal-${index + 1}`
         );
 
-        // Evita identificadores duplicados.
-
         if (ids.has(id)) {
             id = `${id}-${index + 1}`;
         }
@@ -217,10 +232,17 @@ function prepararCanais(canais) {
         ids.add(id);
 
         const nome = String(
-            canal.name || `Canal ${index + 1}`
+            canal.name ||
+            canal.title ||
+            `Canal ${index + 1}`
         );
 
-        const url = validarURL(canal.url);
+        const url = validarURL(
+            canal.url ||
+            canal.src ||
+            canal.stream ||
+            ""
+        );
 
         return {
 
@@ -234,10 +256,16 @@ function prepararCanais(canais) {
 
             url,
 
-            logo: validarURL(canal.logo),
+            logo: validarURL(
+                canal.logo ||
+                canal.image ||
+                ""
+            ),
 
             desc: String(
-                canal.desc || `Transmissão do canal ${nome}.`
+                canal.desc ||
+                canal.description ||
+                `Transmissão do canal ${nome}.`
             ),
 
             epg: Array.isArray(canal.epg)
@@ -246,7 +274,7 @@ function prepararCanais(canais) {
 
         };
 
-    });
+    }).filter(Boolean);
 
 }
 
@@ -282,9 +310,6 @@ async function carregarCanaisAPI() {
         }
 
         const dados = await resposta.json();
-
-        // Aceita tanto uma lista direta quanto
-        // um objeto contendo { channels: [...] }.
 
         const lista = Array.isArray(dados)
             ? dados
@@ -330,6 +355,7 @@ async function carregarCanaisAPI() {
     }
 
 }
+
 
 function atualizarHeroStatus(titulo, descricao) {
 
@@ -443,9 +469,7 @@ function channelCard(channel) {
     );
 
     if (state.selectedId === channel.id) {
-
         card.classList.add("is-selected");
-
     }
 
     const thumb = el("div", "card__thumb");
@@ -519,7 +543,7 @@ function channelCard(channel) {
     meta.appendChild(
         el(
             "span",
-            null,
+            "",
             labels[channel.category] || "Canal"
         )
     );
@@ -531,7 +555,7 @@ function channelCard(channel) {
     meta.appendChild(
         el(
             "span",
-            null,
+            "",
             channel.isLive ? "Em transmissão" : "Programado"
         )
     );
@@ -551,9 +575,7 @@ function channelCard(channel) {
     card.appendChild(body);
 
     card.addEventListener("click", () => {
-
         selectChannel(channel.id);
-
     });
 
     return card;
@@ -568,7 +590,6 @@ function channelCard(channel) {
 function renderGrid() {
 
     const grid = $("#channelGrid");
-
     const empty = $("#gridEmpty");
 
     if (!grid || !empty) return;
@@ -578,11 +599,7 @@ function renderGrid() {
     const list = CHANNELS.filter(matchesFilters);
 
     list.forEach(channel => {
-
-        grid.appendChild(
-            channelCard(channel)
-        );
-
+        grid.appendChild(channelCard(channel));
     });
 
     empty.hidden = list.length > 0;
@@ -671,6 +688,7 @@ function parseStart(time) {
 
 }
 
+
 function currentProgram(channel) {
 
     if (!Array.isArray(channel.epg)) {
@@ -716,6 +734,7 @@ function currentProgram(channel) {
     return null;
 
 }
+
 
 function renderEpg(channel) {
 
@@ -812,15 +831,13 @@ function renderEpg(channel) {
    ============================================================ */
 
 function getVideo() {
-
     return $("#video");
-
 }
+
 
 function showPlayerState(which) {
 
     const states = {
-        none: null,
         noUrl: $("#stateNoUrl"),
         loading: $("#stateLoading"),
         noSignal: $("#stateNoSignal"),
@@ -830,14 +847,13 @@ function showPlayerState(which) {
     Object.entries(states).forEach(([key, node]) => {
 
         if (node) {
-
             node.hidden = key !== which;
-
         }
 
     });
 
 }
+
 
 function clearRetryTimer() {
 
@@ -851,9 +867,8 @@ function clearRetryTimer() {
 
 }
 
-function destroyHls() {
 
-    clearRetryTimer();
+function destroyHls() {
 
     if (state.hls) {
 
@@ -868,6 +883,7 @@ function destroyHls() {
     }
 
 }
+
 
 function isHlsSource(url) {
 
@@ -885,21 +901,23 @@ function isHlsSource(url) {
 
 }
 
+
 function showError(message) {
+
+    clearRetryTimer();
 
     destroyHls();
 
     const errorMessage = $("#errorMessage");
 
     if (errorMessage) {
-
         errorMessage.textContent = message;
-
     }
 
     showPlayerState("error");
 
 }
+
 
 function updatePlayPauseIcon() {
 
@@ -911,17 +929,13 @@ function updatePlayPauseIcon() {
     const pauseIcon = $(".pbtn__icon--pause");
 
     if (playIcon) {
-
         playIcon.style.display =
             video.paused ? "" : "none";
-
     }
 
     if (pauseIcon) {
-
         pauseIcon.style.display =
             video.paused ? "none" : "";
-
     }
 
 }
@@ -967,192 +981,14 @@ function recoverStream(message) {
 
     }, 3000);
 
-/*}
+}
 
 
 /* ============================================================
    14. INICIAR HLS / MP4
    ============================================================ */
 
-
 function attachSource(channel) {
-  const video = getVideo();
-
-  if (!video) return false;
-
-  destroyHls();
-
-  const requestId = ++state.requestId;
-  const url = validarURL(channel.url);
-
-  video.pause();
-  video.removeAttribute("src");
-  video.load();
-
-  if (!url) {
-      showPlayerState("noUrl");
-      return false;
-  }
-
-  showPlayerState("loading");
-
-  // Só tenta reproduzir quando a mídia estiver pronta.
-  function playWhenReady() {
-      if (requestId !== state.requestId) return;
-
-      video.muted = true;
-
-      video.play()
-          .then(() => {
-              if (requestId !== state.requestId) return;
-
-              console.log("Reprodução iniciada:", channel.name);
-              clearRetryTimer();
-              state.retryCount = 0;
-          })
-          .catch(error => {
-              if (requestId !== state.requestId) return;
-
-              console.warn("Falha ao iniciar reprodução:", error);
-
-              if (error.name === "NotAllowedError") {
-                  showPlayerState("none");
-                  console.warn("Clique em Play para iniciar.");
-              } else {
-                  showError(
-                      "O navegador não conseguiu iniciar esta transmissão: " +
-                      error.message
-                  );
-              }
-          });
-  }
-
-  // HLS
-  if (isHlsSource(url)) {
-
-      // HLS nativo do navegador.
-      if (video.canPlayType("application/vnd.apple.mpegurl")) {
-
-          video.addEventListener(
-              "loadedmetadata",
-              playWhenReady,
-              { once: true }
-          );
-
-          video.src = url;
-          video.load();
-
-          return true;
-      }
-
-      // HLS usando hls.js.
-      if (window.Hls && window.Hls.isSupported()) {
-
-          const hls = new window.Hls({
-              enableWorker: true,
-              lowLatencyMode: false,
-              backBufferLength: 30,
-              maxBufferLength: 30,
-              manifestLoadingTimeOut: 20000,
-              fragLoadingTimeOut: 20000
-          });
-
-          state.hls = hls;
-
-          hls.on(window.Hls.Events.ERROR, (_event, data) => {
-
-              if (requestId !== state.requestId) return;
-
-              console.error("[HLS] Erro:", {
-                  type: data.type,
-                  details: data.details,
-                  fatal: data.fatal,
-                  response: data.response
-              });
-
-              if (!data.fatal) return;
-
-              if (
-                  data.type === window.Hls.ErrorTypes.NETWORK_ERROR
-              ) {
-                  recoverStream(
-                      "Falha ao carregar a transmissão. Verifique o servidor."
-                  );
-
-              } else if (
-                  data.type === window.Hls.ErrorTypes.MEDIA_ERROR
-              ) {
-                  console.warn("[HLS] Tentando recuperar mídia.");
-
-                  hls.recoverMediaError();
-
-              } else {
-                  showError(
-                      "Falha fatal no HLS: " + data.details
-                  );
-              }
-          });
-
-          hls.on(
-              window.Hls.Events.MANIFEST_PARSED,
-              () => {
-                  if (requestId !== state.requestId) return;
-
-                  console.log(
-                      "[HLS] Manifesto carregado:",
-                      channel.name
-                  );
-
-                  playWhenReady();
-              }
-          );
-
-          hls.loadSource(url);
-          hls.attachMedia(video);
-
-          return true;
-      }
-
-      showError(
-          "HLS não é suportado neste navegador ou hls.js não foi carregado."
-      );
-
-      return false;
-  }
-
-  // MP4 e outros formatos nativos.
-  video.addEventListener(
-      "loadedmetadata",
-      playWhenReady,
-      { once: true }
-  );
-
-  video.src = url;
-  video.load();
-
-  return true;
-}
-
-
-function iniciarReproducao(channel, reconexao = false) {
-
-  if (!channel) return;
-
-  console.log(
-      reconexao
-          ? "[PLAYER] Reconectando:"
-          : "[PLAYER] Iniciando:",
-      channel.name
-  );
-
-  const ok = attachSource(channel);
-
-  if (!ok) {
-      console.error("[PLAYER] Não foi possível associar a fonte.");
-  }
-}
-
-/*function attachSource(channel) {
 
     const video = getVideo();
 
@@ -1164,9 +1000,15 @@ function iniciarReproducao(channel, reconexao = false) {
 
     }
 
+    // Encerra a transmissão anterior.
     destroyHls();
 
+    clearRetryTimer();
+
+    // Identifica esta tentativa de reprodução.
     const requestId = ++state.requestId;
+
+    const url = validarURL(channel.url);
 
     video.pause();
 
@@ -1174,11 +1016,11 @@ function iniciarReproducao(channel, reconexao = false) {
 
     video.load();
 
-    const url = validarURL(channel.url);
-
     if (!url) {
 
         showPlayerState("noUrl");
+
+        console.error("URL inválida para:", channel.name);
 
         return false;
 
@@ -1186,15 +1028,81 @@ function iniciarReproducao(channel, reconexao = false) {
 
     showPlayerState("loading");
 
+    // Executa a reprodução somente quando estiver pronta.
+    function playWhenReady() {
+
+        if (requestId !== state.requestId) return;
+
+        video.muted = true;
+
+        video.play()
+            .then(() => {
+
+                if (requestId !== state.requestId) return;
+
+                console.log(
+                    "[PLAYER] Reprodução iniciada:",
+                    channel.name
+                );
+
+                showPlayerState("none");
+
+                state.retryCount = 0;
+
+                clearRetryTimer();
+
+                updatePlayPauseIcon();
+
+            })
+            .catch(error => {
+
+                if (requestId !== state.requestId) return;
+
+                console.warn(
+                    "[PLAYER] Falha ao iniciar reprodução:",
+                    error
+                );
+
+                if (error.name === "NotAllowedError") {
+
+                    showPlayerState("none");
+
+                    updatePlayPauseIcon();
+
+                    console.warn(
+                        "O navegador bloqueou a reprodução automática. Pressione Play."
+                    );
+
+                } else {
+
+                    showError(
+                        "Não foi possível iniciar a transmissão: " +
+                        error.message
+                    );
+
+                }
+
+            });
+
+    }
+
+
+    /* --------------------------------------------------------
+       HLS
+       -------------------------------------------------------- */
+
     if (isHlsSource(url)) {
 
         // HLS nativo.
-
         if (
-            video.canPlayType(
-                "application/vnd.apple.mpegurl"
-            )
+            video.canPlayType("application/vnd.apple.mpegurl")
         ) {
+
+            video.addEventListener(
+                "loadedmetadata",
+                playWhenReady,
+                { once: true }
+            );
 
             video.src = url;
 
@@ -1204,8 +1112,8 @@ function iniciarReproducao(channel, reconexao = false) {
 
         }
 
-        // HLS.js.
 
+        // HLS usando hls.js.
         if (
             window.Hls &&
             window.Hls.isSupported()
@@ -1215,51 +1123,71 @@ function iniciarReproducao(channel, reconexao = false) {
 
                 enableWorker: true,
 
-                lowLatencyMode: true,
+                lowLatencyMode: false,
 
                 backBufferLength: 30,
 
-                maxBufferLength: 30
+                maxBufferLength: 30,
+
+                manifestLoadingTimeOut: 20000,
+
+                fragLoadingTimeOut: 20000,
+
+                manifestLoadingMaxRetry: 2,
+
+                fragLoadingMaxRetry: 3
 
             });
 
             state.hls = hls;
 
+
+            // Tratamento de erros HLS.
             hls.on(
                 window.Hls.Events.ERROR,
                 (_event, data) => {
 
                     if (requestId !== state.requestId) return;
 
+                    console.error("[HLS] Erro:", {
+                        type: data.type,
+                        details: data.details,
+                        fatal: data.fatal,
+                        response: data.response
+                    });
+
                     if (!data.fatal) return;
 
-                    console.error(
-                        "Erro fatal HLS:",
-                        data
-                    );
 
                     if (
-                        data.type ===
-                        window.Hls.ErrorTypes.NETWORK_ERROR
+                        data.type === window.Hls.ErrorTypes.NETWORK_ERROR
                     ) {
 
                         recoverStream(
-                            "Falha de rede. Verifique o servidor e a conexão."
+                            "Falha de rede ao carregar a transmissão."
                         );
 
                     } else if (
-                        data.type ===
-                        window.Hls.ErrorTypes.MEDIA_ERROR
+                        data.type === window.Hls.ErrorTypes.MEDIA_ERROR
                     ) {
+
+                        console.warn(
+                            "[HLS] Tentando recuperar a mídia."
+                        );
 
                         try {
 
                             hls.recoverMediaError();
 
-                        } catch {
+                        } catch (error) {
+
+                            console.error(
+                                "[HLS] Falha na recuperação:",
+                                error
+                            );
 
                             recoverStream(
-                                "Falha na recuperação da mídia."
+                                "Não foi possível recuperar a mídia."
                             );
 
                         }
@@ -1267,7 +1195,8 @@ function iniciarReproducao(channel, reconexao = false) {
                     } else {
 
                         showError(
-                            "Não foi possível iniciar a transmissão HLS."
+                            "Falha fatal no HLS: " +
+                            data.details
                         );
 
                     }
@@ -1275,6 +1204,8 @@ function iniciarReproducao(channel, reconexao = false) {
                 }
             );
 
+
+            // Manifesto carregado.
             hls.on(
                 window.Hls.Events.MANIFEST_PARSED,
                 () => {
@@ -1282,30 +1213,44 @@ function iniciarReproducao(channel, reconexao = false) {
                     if (requestId !== state.requestId) return;
 
                     console.log(
-                        "Manifest HLS carregado:",
+                        "[HLS] Manifesto carregado:",
                         channel.name
                     );
+
+                    playWhenReady();
 
                 }
             );
 
-            hls.loadSource(url);
 
+            // Anexa a mídia primeiro e depois carrega o manifesto.
             hls.attachMedia(video);
+
+            hls.loadSource(url);
 
             return true;
 
         }
 
+
         showError(
-            "Este navegador não suporta reprodução HLS. Verifique se hls.js foi carregado."
+            "HLS não é suportado neste navegador ou hls.js não foi carregado."
         );
 
         return false;
 
     }
 
-    // MP4 ou outro formato suportado nativamente.
+
+    /* --------------------------------------------------------
+       MP4 E FORMATOS NATIVOS
+       -------------------------------------------------------- */
+
+    video.addEventListener(
+        "loadedmetadata",
+        playWhenReady,
+        { once: true }
+    );
 
     video.src = url;
 
@@ -1315,61 +1260,29 @@ function iniciarReproducao(channel, reconexao = false) {
 
 }
 
+
 function iniciarReproducao(channel, reconexao = false) {
 
-    const video = getVideo();
+    if (!channel) return;
 
-    if (!video) return;
+    console.log(
+        reconexao
+            ? "[PLAYER] Reconectando:"
+            : "[PLAYER] Iniciando:",
+        channel.name
+    );
 
     const ok = attachSource(channel);
 
-    if (!ok) return;
+    if (!ok) {
 
-    // O navegador pode bloquear autoplay com áudio.
-    // Por isso, iniciamos sem som.
+        console.error(
+            "[PLAYER] Não foi possível associar a fonte."
+        );
 
-    video.muted = true;
+    }
 
-    video.play()
-        .then(() => {
-
-            if (state.selectedId !== channel.id) return;
-
-            showPlayerState("none");
-
-            console.log(
-                "Reprodução iniciada:",
-                channel.name
-            );
-
-            state.retryCount = 0;
-
-            clearRetryTimer();
-
-        })
-        .catch(error => {
-
-            console.warn(
-                "Autoplay bloqueado ou reprodução não iniciada:",
-                error
-            );
-
-            // Mantém o player pronto para o usuário
-            // iniciar manualmente.
-
-            updatePlayPauseIcon();
-
-            if (reconexao) {
-
-                showError(
-                    "A reconexão foi iniciada, mas o navegador não permitiu a reprodução automática. Pressione Play."
-                );
-
-            }
-
-        });
-
-}*/
+}
 
 
 /* ============================================================
@@ -1460,6 +1373,7 @@ function setupPlayerControls() {
     const fullscreen = $("#fullscreenBtn");
     const speed = $("#speedSelect");
 
+
     function togglePlay() {
 
         if (!video.currentSrc && !video.src) return;
@@ -1468,7 +1382,10 @@ function setupPlayerControls() {
 
             video.play().catch(error => {
 
-                console.warn("Não foi possível reproduzir:", error);
+                console.warn(
+                    "Não foi possível reproduzir:",
+                    error
+                );
 
             });
 
@@ -1480,10 +1397,12 @@ function setupPlayerControls() {
 
     }
 
+
     playPause?.addEventListener(
         "click",
         togglePlay
     );
+
 
     video.addEventListener(
         "play",
@@ -1494,6 +1413,7 @@ function setupPlayerControls() {
         "pause",
         updatePlayPauseIcon
     );
+
 
     video.addEventListener(
         "playing",
@@ -1506,18 +1426,18 @@ function setupPlayerControls() {
         }
     );
 
+
     video.addEventListener(
         "waiting",
         () => {
 
             if (video.currentSrc || video.src) {
-
                 showPlayerState("loading");
-
             }
 
         }
     );
+
 
     video.addEventListener(
         "error",
@@ -1525,14 +1445,27 @@ function setupPlayerControls() {
 
             if (!video.currentSrc && !video.src) return;
 
+            // Os erros HLS são tratados pelo hls.js.
             if (state.hls) return;
 
-            showError(
-                "O vídeo não pôde ser carregado. Verifique a URL, o servidor e o formato."
+            const error = video.error;
+
+            console.error(
+                "[PLAYER] Erro nativo:",
+                error
             );
+
+            if (state.selectedId) {
+
+                recoverStream(
+                    "O vídeo não pôde ser carregado. Verifique a URL, o servidor e o formato."
+                );
+
+            }
 
         }
     );
+
 
     video.addEventListener(
         "timeupdate",
@@ -1573,18 +1506,18 @@ function setupPlayerControls() {
         }
     );
 
+
     video.addEventListener(
         "stalled",
         () => {
 
             if (video.currentSrc || video.src) {
-
                 showPlayerState("loading");
-
             }
 
         }
     );
+
 
     mute?.addEventListener(
         "click",
@@ -1597,6 +1530,7 @@ function setupPlayerControls() {
 
         }
     );
+
 
     volume?.addEventListener(
         "input",
@@ -1620,6 +1554,7 @@ function setupPlayerControls() {
 
         }
     );
+
 
     fullscreen?.addEventListener(
         "click",
@@ -1653,6 +1588,7 @@ function setupPlayerControls() {
         }
     );
 
+
     speed?.addEventListener(
         "change",
         () => {
@@ -1663,27 +1599,36 @@ function setupPlayerControls() {
         }
     );
 
+
     function retry() {
 
-        if (state.selectedId) {
+        if (!state.selectedId) return;
 
-            const channel = getChannel(state.selectedId);
+        const channel = getChannel(state.selectedId);
 
-            if (channel) {
+        if (channel) {
 
-                state.retryCount = 0;
+            state.retryCount = 0;
 
-                iniciarReproducao(channel);
+            clearRetryTimer();
 
-            }
+            iniciarReproducao(channel);
 
         }
 
     }
 
-    $("#retryBtn")?.addEventListener("click", retry);
 
-    $("#errorRetryBtn")?.addEventListener("click", retry);
+    $("#retryBtn")?.addEventListener(
+        "click",
+        retry
+    );
+
+    $("#errorRetryBtn")?.addEventListener(
+        "click",
+        retry
+    );
+
 
     video.addEventListener(
         "volumechange",
@@ -1698,6 +1643,7 @@ function setupPlayerControls() {
 
         }
     );
+
 
     updatePlayPauseIcon();
 
@@ -1729,6 +1675,7 @@ function updateFavButton(channel) {
 
 }
 
+
 function setupFavorites() {
 
     const button = $("#heroFavBtn");
@@ -1758,9 +1705,7 @@ function setupFavorites() {
             const channel = getChannel(id);
 
             if (channel) {
-
                 updateFavButton(channel);
-
             }
 
             renderGrid();
@@ -1784,6 +1729,7 @@ function setupNav() {
     const searchInput = $("#searchInput");
 
     const profileBtn = $("#profileBtn");
+
 
     mainNav?.addEventListener(
         "click",
@@ -1830,6 +1776,7 @@ function setupNav() {
         }
     );
 
+
     searchInput?.addEventListener(
         "input",
         event => {
@@ -1840,6 +1787,7 @@ function setupNav() {
 
         }
     );
+
 
     profileBtn?.addEventListener(
         "click",
@@ -1882,6 +1830,7 @@ function gridColumns() {
 
 }
 
+
 function setupKeyboard() {
 
     document.addEventListener(
@@ -1910,6 +1859,7 @@ function setupKeyboard() {
 
             }
 
+
             switch (event.key) {
 
                 case " ":
@@ -1926,6 +1876,7 @@ function setupKeyboard() {
                     }
 
                     break;
+
 
                 case "ArrowRight":
                 case "ArrowLeft":
@@ -1993,6 +1944,7 @@ function setupKeyboard() {
 
                 }
 
+
                 case "Escape":
 
                     if (document.fullscreenElement) {
@@ -2003,12 +1955,14 @@ function setupKeyboard() {
 
                     break;
 
+
                 case "f":
                 case "F":
 
                     $("#fullscreenBtn")?.click();
 
                     break;
+
 
                 case "m":
                 case "M":
@@ -2035,12 +1989,12 @@ async function init() {
 
     if (state.destroyed) return;
 
-    // Relógio.
 
+    // Relógio.
     startClock();
 
-    // Controles.
 
+    // Controles.
     setupPlayerControls();
 
     setupFavorites();
@@ -2049,15 +2003,16 @@ async function init() {
 
     setupKeyboard();
 
-    // Estado inicial.
 
+    // Estado inicial.
     showPlayerState("loading");
 
-    // Conexão com backend.
 
+    // Conexão com backend.
     const conectado = await carregarCanaisAPI();
 
     if (state.destroyed) return;
+
 
     if (!conectado || CHANNELS.length === 0) {
 
@@ -2075,15 +2030,14 @@ async function init() {
 
     }
 
-    // Renderização.
 
+    // Renderização.
     renderGrid();
 
     renderShelves();
 
-    // Seleciona o primeiro canal sem iniciar
-    // automaticamente a transmissão.
 
+    // Seleciona o primeiro canal sem reproduzir automaticamente.
     const primeiroCanal = CHANNELS[0];
 
     if (primeiroCanal) {
@@ -2098,19 +2052,13 @@ async function init() {
         const heroLiveTag = $("#heroLiveTag");
 
         if (heroLiveTag) {
-
-            heroLiveTag.hidden =
-                !primeiroCanal.isLive;
-
+            heroLiveTag.hidden = !primeiroCanal.isLive;
         }
 
         const liveBadge = $("#liveBadge");
 
         if (liveBadge) {
-
-            liveBadge.hidden =
-                !primeiroCanal.isLive;
-
+            liveBadge.hidden = !primeiroCanal.isLive;
         }
 
         updateFavButton(primeiroCanal);
@@ -2124,6 +2072,7 @@ async function init() {
         showPlayerState("noUrl");
 
     }
+
 
     console.log(
         "NovaTV inicializada com sucesso."
