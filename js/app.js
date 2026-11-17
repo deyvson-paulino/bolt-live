@@ -25,7 +25,7 @@
    // COLOQUE AQUI O ENDEREÇO ATUAL DO SEU CLOUDFLARE TUNNEL.
    // Não coloque /api/channels no final.
    
-   const API_BASE_URL = "https://singles-secretariat-annual-consent.trycloudflare.com";
+   const API_BASE_URL = "https://nose-highways-agency-butler.trycloudflare.com";
    
    const API_CHANNELS = `${API_BASE_URL}/api/channels`;
    
