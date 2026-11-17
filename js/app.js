@@ -1,1134 +1,2293 @@
-/* ============================================================
-   NovaTV — app.js otimizado
-   Player HLS (hls.js) + MP4 nativo
-   Navegação por teclado/controle remoto
-   Favoritos, EPG, busca e canais recomendados
-   ============================================================ */
 
 "use strict";
 
 /* ============================================================
-   1. CONFIGURAÇÃO DOS CANAIS
+   NOVATV — APLICAÇÃO PRINCIPAL
+   Frontend: GitHub Pages
+   Backend: Node.js + API REST
+   Player: HLS.js + HTML5 Video
+
+   Recursos:
+   - Carregamento dos canais pela API
+   - Reprodução HLS (.m3u8)
+   - Reprodução MP4
+   - Busca e categorias
+   - Favoritos
+   - Histórico da sessão
+   - EPG
+   - Navegação por teclado
+   - Reconexão automática
+   - Timeout de carregamento
+   - Diagnóstico de erros no Console
    ============================================================ */
 
-const CHANNELS = [
-  {
-    id: "nova-1",
-    name: "Nova Notícias",
-    category: "aovivo",
-    isLive: true,
-    url: "",
-    desc: "Jornalismo 24 horas com cobertura dos principais acontecimentos.",
-    epg: [
-      ["06:00", "Manhã Nova"],
-      ["09:00", "Jornal das Dez"],
-      ["12:00", "Nova Notícias ao Meio-dia"],
-      ["13:00", "Economia em Dia"],
-      ["18:00", "Plantão Nova"],
-      ["21:00", "Grandes Reportagens"]
-    ]
-  },
-  {
-    id: "nova-2",
-    name: "Nova Esportes",
-    category: "aovivo",
-    isLive: true,
-    url: "",
-    desc: "Transmissões esportivas, mesa-redonda e resumos da rodada.",
-    epg: [
-      ["07:00", "Bem-vindo ao Clan"],
-      ["10:00", "Café com Bola"],
-      ["14:00", "Volta Rápida"],
-      ["17:00", "Mesa Redonda Nova"],
-      ["20:00", "Jogo da Noite"]
-    ]
-  },
-  {
-    id: "nova-3",
-    name: "Nova Documenta",
-    category: "aovivo",
-    isLive: true,
-    url: "",
-    desc: "Documentários sobre natureza, ciência e culturas do mundo.",
-    epg: [
-      ["08:00", "Planeta Extremo"],
-      ["11:00", "Mundos Pequenos"],
-      ["15:00", "Rotas do Oceano"],
-      ["19:00", "Origens"],
-      ["22:00", "Universo Sem Fim"]
-    ]
-  },
-  {
-    id: "nova-4",
-    name: "Nova Culinária",
-    category: "aovivo",
-    isLive: true,
-    url: "",
-    desc: "Programas de gastronomia com chefs convidados.",
-    epg: [
-      ["09:00", "Café & Panela"],
-      ["12:30", "Almoço Rápido"],
-      ["16:00", "Doces & Segredos"],
-      ["20:30", "Cozinha de Autor"]
-    ]
-  },
-  {
-    id: "filme-1",
-    name: "Sala Nova — Aventura",
-    category: "filmes",
-    isLive: false,
-    url: "",
-    desc: "Maratona de filmes de aventura em exibição contínua.",
-    epg: [
-      ["10:00", "Trilhas do Horizonte"],
-      ["12:00", "Vento Sul"],
-      ["14:30", "O Último Farol"],
-      ["17:00", "Rota Selvagem"],
-      ["20:00", "Alto Mar"]
-    ]
-  },
-  {
-    id: "filme-2",
-    name: "Sala Nova — Clássicos",
-    category: "filmes",
-    isLive: false,
-    url: "",
-    desc: "Grandes clássicos do cinema restaurados em alta definição.",
-    epg: [
-      ["11:00", "Cidade Antiga"],
-      ["13:30", "A Sétima Carta"],
-      ["16:00", "Noite de Gala"],
-      ["19:30", "Estrela de Prata"]
-    ]
-  },
-  {
-    id: "serie-1",
-    name: "Nova Séries — Drama",
-    category: "series",
-    isLive: false,
-    url: "",
-    desc: "Maratona da série dramática Fronteiras.",
-    epg: [
-      ["09:00", "Fronteiras T1E1"],
-      ["10:00", "Fronteiras T1E2"],
-      ["11:00", "Fronteiras T1E3"],
-      ["12:00", "Fronteiras T1E4"],
-      ["13:00", "Fronteiras T1E5"]
-    ]
-  },
-  {
-    id: "serie-2",
-    name: "Nova Séries — Comédia",
-    category: "series",
-    isLive: false,
-    url: "",
-    desc: "Sitcoms e comédias leves para todas as idades.",
-    epg: [
-      ["08:00", "Vizinhança Feliz E1"],
-      ["08:30", "Vizinhança Feliz E2"],
-      ["09:00", "Papo de Elevador E1"],
-      ["09:30", "Papo de Elevador E2"]
-    ]
-  }
-];
 
 /* ============================================================
-   2. ESTADO GLOBAL
+   1. CONFIGURAÇÃO
    ============================================================ */
 
+const API_BASE_URL =
+    "https://nose-highways-agency-butler.trycloudflare.com";
+
+const API_CHANNELS =
+    `${API_BASE_URL.replace(/\/+$/, "")}/api/channels`;
+
+const CONFIG = {
+    apiTimeout: 15000,
+    manifestTimeout: 25000,
+    playbackTimeout: 30000,
+    retryDelay: 4000,
+    maxRetries: 3
+};
+
+
+/* ============================================================
+   2. ESTADO
+   ============================================================ */
+
+let CHANNELS = [];
+
 const state = {
-  category: "inicio",
-  search: "",
-  selectedId: null,
-  hls: null,
-  favorites: new Set(loadFavorites()),
-  watching: [],
-  requestId: 0
+    category: "inicio",
+    search: "",
+    selectedId: null,
+
+    hls: null,
+
+    favorites: new Set(loadFavorites()),
+    watching: [],
+
+    requestId: 0,
+
+    retryCount: 0,
+    retryTimer: null,
+    startupTimer: null,
+
+    mediaRecoveryAttempted: false,
+    destroyed: false
 };
 
 const CATEGORY_LABELS = {
-  inicio: "Canais ao vivo",
-  aovivo: "Canais ao vivo",
-  filmes: "Canais de filmes",
-  series: "Canais de séries",
-  favoritos: "Seus favoritos"
+    inicio: "Canais disponíveis",
+    aovivo: "Canais ao vivo",
+    filmes: "Canais de filmes",
+    series: "Canais de séries",
+    favoritos: "Seus favoritos"
 };
 
+
 /* ============================================================
-   3. ELEMENTOS E UTILITÁRIOS
+   3. UTILITÁRIOS
    ============================================================ */
 
-const $ = (selector) => document.querySelector(selector);
+const $ = selector =>
+    document.querySelector(selector);
 
-const video = $("#video");
+const $$ = selector =>
+    [...document.querySelectorAll(selector)];
+
+
+function log(...args) {
+    console.log("[NOVATV]", ...args);
+}
+
+
+function warn(...args) {
+    console.warn("[NOVATV]", ...args);
+}
+
+
+function errorLog(...args) {
+    console.error("[NOVATV]", ...args);
+}
+
 
 function el(tag, className = "", text = null) {
-  const node = document.createElement(tag);
 
-  if (className) node.className = className;
-  if (text !== null) node.textContent = text;
+    const node = document.createElement(tag);
 
-  return node;
+    if (className) {
+        node.className = className;
+    }
+
+    if (text !== null) {
+        node.textContent = text;
+    }
+
+    return node;
 }
 
-function setText(selector, value) {
-  const node = $(selector);
-  if (node) node.textContent = value ?? "";
-}
-
-function setHidden(selector, hidden) {
-  const node = $(selector);
-  if (node) node.hidden = hidden;
-}
-
-function getChannel(id) {
-  return CHANNELS.find(channel => channel.id === id) || null;
-}
-
-function isValidChannelUrl(url) {
-  if (typeof url !== "string" || !url.trim()) return false;
-
-  if (url.includes("COLE_A_URL_DO_SEU_STREAM_AQUI")) {
-    return false;
-  }
-
-  try {
-    const parsed = new URL(url);
-    return ["http:", "https:"].includes(parsed.protocol);
-  } catch {
-    return false;
-  }
-}
 
 function loadFavorites() {
-  try {
-    const saved = JSON.parse(
-      localStorage.getItem("novatv.favorites") || "[]"
-    );
 
-    if (!Array.isArray(saved)) return [];
+    try {
 
-    return saved.filter(id =>
-      typeof id === "string" && getChannel(id)
-    );
-  } catch {
-    return [];
-  }
+        const data = JSON.parse(
+            localStorage.getItem("novatv.favorites") || "[]"
+        );
+
+        return Array.isArray(data)
+            ? data.map(String)
+            : [];
+
+    } catch (err) {
+
+        warn("Não foi possível carregar favoritos:", err);
+
+        return [];
+
+    }
+
 }
+
 
 function saveFavorites() {
-  try {
-    localStorage.setItem(
-      "novatv.favorites",
-      JSON.stringify([...state.favorites])
-    );
-  } catch (error) {
-    console.warn("Não foi possível salvar os favoritos:", error);
-  }
+
+    try {
+
+        localStorage.setItem(
+            "novatv.favorites",
+            JSON.stringify([...state.favorites])
+        );
+
+    } catch (err) {
+
+        warn("Não foi possível salvar favoritos:", err);
+
+    }
+
 }
 
+
+function getChannel(id) {
+
+    return CHANNELS.find(
+        channel => channel.id === String(id)
+    ) || null;
+
+}
+
+
+function validarURL(value) {
+
+    if (typeof value !== "string" || !value.trim()) {
+        return "";
+    }
+
+    try {
+
+        const url = new URL(value.trim());
+
+        if (!["http:", "https:"].includes(url.protocol)) {
+            return "";
+        }
+
+        return url.href;
+
+    } catch {
+
+        return "";
+
+    }
+
+}
+
+
+function normalizarTexto(value) {
+
+    return String(value || "")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .trim();
+
+}
+
+
+function obterCampo(obj, campos) {
+
+    for (const campo of campos) {
+
+        const valor = obj?.[campo];
+
+        if (
+            valor !== undefined &&
+            valor !== null &&
+            String(valor).trim() !== ""
+        ) {
+            return valor;
+        }
+
+    }
+
+    return "";
+
+}
+
+
+function limparTimers() {
+
+    if (state.retryTimer) {
+        clearTimeout(state.retryTimer);
+        state.retryTimer = null;
+    }
+
+    if (state.startupTimer) {
+        clearTimeout(state.startupTimer);
+        state.startupTimer = null;
+    }
+
+}
+
+
+function limitarTexto(value, max = 500) {
+
+    return String(value || "").slice(0, max);
+
+}
+
+
 /* ============================================================
-   4. RELÓGIO
+   4. PREPARAÇÃO DOS CANAIS
+   ============================================================ */
+
+function prepararCanais(canais) {
+
+    if (!Array.isArray(canais)) {
+        return [];
+    }
+
+    const ids = new Set();
+
+    return canais.map((canal, index) => {
+
+        if (!canal || typeof canal !== "object") {
+            return null;
+        }
+
+        const grupo = normalizarTexto(
+            obterCampo(canal, [
+                "group",
+                "groupTitle",
+                "group-title",
+                "category"
+            ])
+        );
+
+        let categoria = "aovivo";
+
+        if (
+            grupo.includes("filme") ||
+            grupo.includes("cinema")
+        ) {
+
+            categoria = "filmes";
+
+        } else if (
+            grupo.includes("serie") ||
+            grupo.includes("seriado")
+        ) {
+
+            categoria = "series";
+
+        }
+
+        let id = String(
+            obterCampo(canal, [
+                "id",
+                "tvg-id"
+            ]) || `canal-${index + 1}`
+        );
+
+        if (ids.has(id)) {
+            id = `${id}-${index + 1}`;
+        }
+
+        ids.add(id);
+
+        const nome = String(
+            obterCampo(canal, [
+                "name",
+                "title",
+                "tvg-name"
+            ]) || `Canal ${index + 1}`
+        );
+
+        const url = validarURL(
+            obterCampo(canal, [
+                "url",
+                "src",
+                "stream",
+                "file"
+            ])
+        );
+
+        const logo = validarURL(
+            obterCampo(canal, [
+                "logo",
+                "image",
+                "tvg-logo"
+            ])
+        );
+
+        return {
+            id,
+            name: limitarTexto(nome, 150),
+            category: categoria,
+            isLive: categoria === "aovivo",
+            url,
+            logo,
+            desc: limitarTexto(
+                obterCampo(canal, [
+                    "desc",
+                    "description"
+                ]) || `Transmissão do canal ${nome}.`,
+                500
+            ),
+            epg: Array.isArray(canal.epg)
+                ? canal.epg
+                : []
+        };
+
+    }).filter(Boolean);
+
+}
+
+
+/* ============================================================
+   5. BACKEND — CARREGAMENTO DA API
+   ============================================================ */
+
+async function carregarCanaisAPI() {
+
+    log("Conectando ao backend:", API_BASE_URL);
+
+    const controller = new AbortController();
+
+    const timeout = setTimeout(
+        () => controller.abort(),
+        CONFIG.apiTimeout
+    );
+
+    try {
+
+        const resposta = await fetch(API_CHANNELS, {
+            method: "GET",
+            headers: {
+                Accept: "application/json"
+            },
+            cache: "no-store",
+            signal: controller.signal
+        });
+
+        log("Resposta da API:", resposta.status);
+
+        if (!resposta.ok) {
+            throw new Error(`HTTP ${resposta.status}`);
+        }
+
+        const dados = await resposta.json();
+
+        let lista = [];
+
+        if (Array.isArray(dados)) {
+
+            lista = dados;
+
+        } else if (Array.isArray(dados?.channels)) {
+
+            lista = dados.channels;
+
+        } else if (Array.isArray(dados?.data)) {
+
+            lista = dados.data;
+
+        } else if (Array.isArray(dados?.items)) {
+
+            lista = dados.items;
+
+        } else {
+
+            throw new Error(
+                "Formato da API não reconhecido. Esperado um array de canais."
+            );
+
+        }
+
+        CHANNELS = prepararCanais(lista);
+
+        log("Canais recebidos:", lista.length);
+        log("Canais válidos:", CHANNELS.length);
+
+        if (CHANNELS.length !== lista.length) {
+            warn("Alguns registros foram ignorados durante a preparação.");
+        }
+
+        atualizarHeroStatus(
+            "NovaTV",
+            `${CHANNELS.length} canais disponíveis.`
+        );
+
+        return CHANNELS.length > 0;
+
+    } catch (err) {
+
+        if (err.name === "AbortError") {
+
+            errorLog(
+                "Tempo limite ao conectar com a API."
+            );
+
+        } else {
+
+            errorLog(
+                "Falha ao carregar a API:",
+                err
+            );
+
+        }
+
+        CHANNELS = [];
+
+        atualizarHeroStatus(
+            "Backend indisponível",
+            "Não foi possível carregar os canais. Verifique o Node.js, o endereço do Tunnel e a API."
+        );
+
+        return false;
+
+    } finally {
+
+        clearTimeout(timeout);
+
+    }
+
+}
+
+
+function atualizarHeroStatus(titulo, descricao) {
+
+    const title = $("#heroTitle");
+    const desc = $("#heroDesc");
+
+    if (title) title.textContent = titulo;
+    if (desc) desc.textContent = descricao;
+
+}
+
+
+/* ============================================================
+   6. RELÓGIO
    ============================================================ */
 
 function startClock() {
-  const time = $("#clockTime");
-  const date = $("#clockDate");
 
-  if (!time && !date) return;
+    const time = $("#clockTime");
+    const date = $("#clockDate");
 
-  const dateFormatter = new Intl.DateTimeFormat("pt-BR", {
-    weekday: "long",
-    day: "numeric",
-    month: "short"
-  });
+    if (!time || !date) return;
 
-  function updateClock() {
-    const now = new Date();
+    const formatDate = new Intl.DateTimeFormat(
+        "pt-BR",
+        {
+            weekday: "long",
+            day: "numeric",
+            month: "short"
+        }
+    );
 
-    if (time) {
-      time.textContent = now.toLocaleTimeString("pt-BR", {
-        hour: "2-digit",
-        minute: "2-digit"
-      });
+    function tick() {
+
+        const now = new Date();
+
+        time.textContent = now.toLocaleTimeString(
+            "pt-BR",
+            {
+                hour: "2-digit",
+                minute: "2-digit"
+            }
+        );
+
+        date.textContent = formatDate.format(now);
+
     }
 
-    if (date) {
-      date.textContent = dateFormatter.format(now);
-    }
-  }
+    tick();
 
-  updateClock();
-  setInterval(updateClock, 30000);
+    setInterval(tick, 30000);
+
 }
 
+
 /* ============================================================
-   5. FILTROS E GRADE
+   7. FILTROS
    ============================================================ */
 
 function matchesFilters(channel) {
-  const category = state.category;
 
-  const matchesCategory =
-    category === "inicio" ||
-    (
-      category === "favoritos"
-        ? state.favorites.has(channel.id)
-        : channel.category === category
-    );
+    let categoryOK = true;
 
-  const query = state.search.trim().toLowerCase();
+    if (state.category === "favoritos") {
 
-  const matchesSearch =
-    !query ||
-    channel.name.toLowerCase().includes(query) ||
-    channel.desc.toLowerCase().includes(query);
+        categoryOK = state.favorites.has(channel.id);
 
-  return matchesCategory && matchesSearch;
+    } else if (state.category !== "inicio") {
+
+        categoryOK =
+            channel.category === state.category;
+
+    }
+
+    const query = normalizarTexto(state.search);
+
+    const searchOK =
+        !query ||
+        normalizarTexto(channel.name).includes(query) ||
+        normalizarTexto(channel.desc).includes(query) ||
+        normalizarTexto(channel.category).includes(query);
+
+    return categoryOK && searchOK;
+
 }
 
-function channelCard(channel) {
-  const card = el("button", "card");
-
-  card.type = "button";
-  card.dataset.id = channel.id;
-
-  card.setAttribute("aria-label", channel.name);
-
-  if (state.selectedId === channel.id) {
-    card.classList.add("is-selected");
-  }
-
-  const thumb = el("div", "card__thumb");
-
-  thumb.appendChild(
-    el("span", "card__initial", channel.name.charAt(0))
-  );
-
-  if (channel.isLive) {
-    thumb.appendChild(el("span", "card__live", "AO VIVO"));
-  }
-
-  if (state.favorites.has(channel.id)) {
-    thumb.appendChild(el("span", "card__fav", "♥"));
-  }
-
-  if (state.selectedId === channel.id) {
-    thumb.appendChild(el("span", "card__playing", "▶"));
-  }
-
-  const body = el("div", "card__body");
-
-  body.appendChild(
-    el("h3", "card__name", channel.name)
-  );
-
-  const labels = {
-    aovivo: "Ao vivo",
-    filmes: "Filmes",
-    series: "Séries"
-  };
-
-  const meta = el("p", "card__meta");
-
-  meta.appendChild(
-    el("span", "", labels[channel.category] || "Canal")
-  );
-
-  meta.appendChild(el("span", "dot"));
-
-  meta.appendChild(
-    el("span", "", channel.isLive ? "Em transmissão" : "Programado")
-  );
-
-  body.appendChild(meta);
-
-  const current = currentProgram(channel);
-
-  if (current) {
-    body.appendChild(
-      el("p", "card__now", `Agora: ${current}`)
-    );
-  }
-
-  card.append(thumb, body);
-
-  card.addEventListener("click", () => {
-    selectChannel(channel.id);
-  });
-
-  return card;
-}
-
-function renderGrid() {
-  const grid = $("#channelGrid");
-  const empty = $("#gridEmpty");
-
-  if (!grid) return;
-
-  const channels = CHANNELS.filter(matchesFilters);
-
-  grid.replaceChildren(
-    ...channels.map(channelCard)
-  );
-
-  if (empty) {
-    empty.hidden = channels.length > 0;
-  }
-
-  setText(
-    "#gridTitle",
-    CATEGORY_LABELS[state.category] || "Canais"
-  );
-}
-
-function renderShelves() {
-  const watchingSection = $("#watchingSection");
-  const watchingRow = $("#watchingRow");
-  const recommendedRow = $("#recommendedRow");
-
-  const watching = state.watching
-    .map(getChannel)
-    .filter(Boolean);
-
-  if (watchingSection) {
-    watchingSection.hidden = watching.length === 0;
-  }
-
-  if (watchingRow) {
-    watchingRow.replaceChildren(
-      ...watching.map(channelCard)
-    );
-  }
-
-  const recommended = CHANNELS
-    .filter(channel =>
-      channel.isLive && channel.id !== state.selectedId
-    )
-    .slice(0, 6);
-
-  if (recommendedRow) {
-    recommendedRow.replaceChildren(
-      ...recommended.map(channelCard)
-    );
-  }
-}
 
 /* ============================================================
-   6. EPG — PROGRAMAÇÃO
+   8. CARTÕES
+   ============================================================ */
+
+function channelCard(channel) {
+
+    const card = el("button", "card");
+
+    card.type = "button";
+    card.dataset.id = channel.id;
+    card.setAttribute("role", "listitem");
+
+    card.setAttribute(
+        "aria-label",
+        `${channel.name} — ${channel.desc}`
+    );
+
+    if (state.selectedId === channel.id) {
+        card.classList.add("is-selected");
+    }
+
+    const thumb = el("div", "card__thumb");
+
+    if (channel.logo) {
+
+        const logo = el("img", "card__logo");
+
+        logo.src = channel.logo;
+        logo.alt = channel.name;
+        logo.loading = "lazy";
+
+        logo.onerror = () => logo.remove();
+
+        thumb.appendChild(logo);
+
+    } else {
+
+        thumb.appendChild(
+            el(
+                "span",
+                "card__initial",
+                channel.name.charAt(0).toUpperCase()
+            )
+        );
+
+    }
+
+    if (channel.isLive) {
+        thumb.appendChild(
+            el("span", "card__live", "AO VIVO")
+        );
+    }
+
+    if (state.favorites.has(channel.id)) {
+        thumb.appendChild(
+            el("span", "card__fav", "♥")
+        );
+    }
+
+    if (state.selectedId === channel.id) {
+        thumb.appendChild(
+            el("span", "card__playing", "▶")
+        );
+    }
+
+    card.appendChild(thumb);
+
+    const body = el("div", "card__body");
+
+    body.appendChild(
+        el("h3", "card__name", channel.name)
+    );
+
+    const labels = {
+        aovivo: "Ao vivo",
+        filmes: "Filmes",
+        series: "Séries"
+    };
+
+    const meta = el("p", "card__meta");
+
+    meta.appendChild(
+        el(
+            "span",
+            "",
+            labels[channel.category] || "Canal"
+        )
+    );
+
+    meta.appendChild(el("span", "dot"));
+
+    meta.appendChild(
+        el(
+            "span",
+            "",
+            channel.isLive ? "Em transmissão" : "Programado"
+        )
+    );
+
+    body.appendChild(meta);
+
+    const current = currentProgram(channel);
+
+    if (current) {
+        body.appendChild(
+            el("p", "card__now", `Agora: ${current}`)
+        );
+    }
+
+    card.appendChild(body);
+
+    card.addEventListener("click", () => {
+        selectChannel(channel.id);
+    });
+
+    return card;
+
+}
+
+
+/* ============================================================
+   9. RENDERIZAÇÃO
+   ============================================================ */
+
+function renderGrid() {
+
+    const grid = $("#channelGrid");
+    const empty = $("#gridEmpty");
+
+    if (!grid || !empty) return;
+
+    grid.replaceChildren();
+
+    const list = CHANNELS.filter(matchesFilters);
+
+    list.forEach(channel => {
+        grid.appendChild(channelCard(channel));
+    });
+
+    empty.hidden = list.length > 0;
+
+    const title = $("#gridTitle");
+
+    if (title) {
+        title.textContent =
+            CATEGORY_LABELS[state.category] || "Canais";
+    }
+
+}
+
+
+function renderShelves() {
+
+    const watching = $("#watchingSection");
+    const watchingRow = $("#watchingRow");
+    const recommendedRow = $("#recommendedRow");
+
+    if (watching && watchingRow) {
+
+        const list = state.watching
+            .map(getChannel)
+            .filter(Boolean);
+
+        watching.hidden = list.length === 0;
+
+        watchingRow.replaceChildren(
+            ...list.map(channelCard)
+        );
+
+    }
+
+    if (recommendedRow) {
+
+        const recommendations = CHANNELS
+            .filter(channel =>
+                channel.isLive &&
+                channel.id !== state.selectedId
+            )
+            .slice(0, 6);
+
+        recommendedRow.replaceChildren(
+            ...recommendations.map(channelCard)
+        );
+
+    }
+
+}
+
+
+/* ============================================================
+   10. EPG
    ============================================================ */
 
 function parseStart(time) {
-  if (typeof time !== "string" || !/^\d{2}:\d{2}$/.test(time)) {
-    return -1;
-  }
 
-  const [hours, minutes] = time.split(":").map(Number);
+    if (typeof time !== "string") return null;
 
-  if (hours > 23 || minutes > 59) return -1;
+    const match = time.match(/^(\d{1,2}):(\d{2})$/);
 
-  return hours * 60 + minutes;
+    if (!match) return null;
+
+    const hours = Number(match[1]);
+    const minutes = Number(match[2]);
+
+    if (
+        hours < 0 ||
+        hours > 23 ||
+        minutes < 0 ||
+        minutes > 59
+    ) {
+        return null;
+    }
+
+    return hours * 60 + minutes;
+
 }
+
 
 function currentProgram(channel) {
-  if (!Array.isArray(channel.epg) || !channel.epg.length) {
-    return null;
-  }
 
-  const now = new Date();
-  const currentMinutes = now.getHours() * 60 + now.getMinutes();
+    if (!Array.isArray(channel.epg)) return null;
 
-  const schedule = channel.epg
-    .filter(item =>
-      Array.isArray(item) &&
-      item.length >= 2 &&
-      parseStart(item[0]) >= 0
-    )
-    .sort((a, b) => parseStart(a[0]) - parseStart(b[0]));
+    const programs = channel.epg
+        .filter(item =>
+            Array.isArray(item) &&
+            item.length >= 2 &&
+            parseStart(item[0]) !== null
+        )
+        .sort((a, b) =>
+            parseStart(a[0]) - parseStart(b[0])
+        );
 
-  if (!schedule.length) return null;
+    if (!programs.length) return null;
 
-  let current = null;
+    const now = new Date();
 
-  for (const item of schedule) {
-    if (parseStart(item[0]) <= currentMinutes) {
-      current = item[1];
-    } else {
-      break;
+    const currentMinutes =
+        now.getHours() * 60 + now.getMinutes();
+
+    for (let i = 0; i < programs.length; i++) {
+
+        const start = parseStart(programs[i][0]);
+
+        const end = i + 1 < programs.length
+            ? parseStart(programs[i + 1][0])
+            : 1440;
+
+        if (
+            currentMinutes >= start &&
+            currentMinutes < end
+        ) {
+            return String(programs[i][1]);
+        }
+
     }
-  }
 
-  return current;
+    return null;
+
 }
+
 
 function renderEpg(channel) {
-  const section = $("#epgSection");
-  const timeline = $("#epgTimeline");
 
-  if (!section || !timeline) return;
+    const section = $("#epgSection");
+    const timeline = $("#epgTimeline");
+    const channelName = $("#epgChannelName");
 
-  const schedule = Array.isArray(channel.epg)
-    ? channel.epg.filter(item =>
-        Array.isArray(item) &&
-        item.length >= 2 &&
-        parseStart(item[0]) >= 0
-      ).sort((a, b) => parseStart(a[0]) - parseStart(b[0]))
-    : [];
+    if (!section || !timeline) return;
 
-  if (!schedule.length) {
-    section.hidden = true;
-    return;
-  }
-
-  setText("#epgChannelName", channel.name);
-
-  timeline.replaceChildren();
-
-  const now = new Date();
-  const currentMinutes = now.getHours() * 60 + now.getMinutes();
-
-  let currentIndex = -1;
-
-  for (let i = 0; i < schedule.length; i++) {
-    const start = parseStart(schedule[i][0]);
-    const nextStart = schedule[i + 1]
-      ? parseStart(schedule[i + 1][0])
-      : 1440;
-
-    if (currentMinutes >= start && currentMinutes < nextStart) {
-      currentIndex = i;
-      break;
-    }
-  }
-
-  schedule.forEach(([time, name], index) => {
-    const item = el("div", "epg__item");
-
-    if (index === currentIndex) {
-      item.classList.add("epg__item--current");
-    } else if (index === currentIndex + 1) {
-      item.classList.add("epg__item--next");
+    if (!channel.epg || !channel.epg.length) {
+        section.hidden = true;
+        return;
     }
 
-    item.appendChild(el("span", "epg__time", time));
-    item.appendChild(el("p", "epg__name", name));
-
-    if (index === currentIndex) {
-      item.appendChild(
-        el("span", "epg__badge", "NO AR AGORA")
-      );
+    if (channelName) {
+        channelName.textContent = channel.name;
     }
 
-    timeline.appendChild(item);
-  });
+    timeline.replaceChildren();
 
-  section.hidden = false;
+    const now = new Date();
+
+    const currentMinutes =
+        now.getHours() * 60 + now.getMinutes();
+
+    const programs = channel.epg
+        .filter(item =>
+            Array.isArray(item) &&
+            item.length >= 2 &&
+            parseStart(item[0]) !== null
+        )
+        .sort((a, b) =>
+            parseStart(a[0]) - parseStart(b[0])
+        );
+
+    const currentIndex = programs.findIndex(
+        (program, index) => {
+
+            const start = parseStart(program[0]);
+
+            const end = index + 1 < programs.length
+                ? parseStart(programs[index + 1][0])
+                : 1440;
+
+            return (
+                currentMinutes >= start &&
+                currentMinutes < end
+            );
+
+        }
+    );
+
+    programs.forEach(([time, name], index) => {
+
+        const item = el("div", "epg__item");
+
+        if (index === currentIndex) {
+            item.classList.add("epg__item--current");
+        } else if (index === currentIndex + 1) {
+            item.classList.add("epg__item--next");
+        }
+
+        item.appendChild(
+            el("span", "epg__time", time)
+        );
+
+        item.appendChild(
+            el("p", "epg__name", String(name))
+        );
+
+        if (index === currentIndex) {
+            item.appendChild(
+                el("span", "epg__badge", "NO AR AGORA")
+            );
+        }
+
+        timeline.appendChild(item);
+
+    });
+
+    section.hidden = programs.length === 0;
+
 }
+
 
 /* ============================================================
-   7. PLAYER HLS / MP4
+   11. PLAYER — ESTADOS
    ============================================================ */
 
-function showPlayerState(which) {
-  const states = {
-    noUrl: $("#stateNoUrl"),
-    loading: $("#stateLoading"),
-    noSignal: $("#stateNoSignal"),
-    error: $("#stateError")
-  };
-
-  Object.entries(states).forEach(([key, node]) => {
-    if (node) {
-      // A mensagem de carregamento permanece desativada.
-      node.hidden = key !== which || key === "loading";
-    }
-  });
+function getVideo() {
+    return $("#video");
 }
 
+
+function showPlayerState(which) {
+
+    const states = {
+        noUrl: $("#stateNoUrl"),
+        loading: $("#stateLoading"),
+        noSignal: $("#stateNoSignal"),
+        error: $("#stateError")
+    };
+
+    Object.entries(states).forEach(([key, node]) => {
+
+        if (node) {
+            node.hidden = key !== which;
+        }
+
+    });
+
+}
+
+
+function clearPlayerTimers() {
+
+    if (state.retryTimer) {
+        clearTimeout(state.retryTimer);
+        state.retryTimer = null;
+    }
+
+    if (state.startupTimer) {
+        clearTimeout(state.startupTimer);
+        state.startupTimer = null;
+    }
+
+}
+
+
 function destroyHls() {
-  if (state.hls) {
+
+    if (!state.hls) return;
+
     try {
-      state.hls.destroy();
-    } catch (error) {
-      console.warn("Erro ao encerrar HLS:", error);
+        state.hls.destroy();
+    } catch (err) {
+        warn("Erro ao encerrar HLS:", err);
     }
 
     state.hls = null;
-  }
+
 }
 
-function stopPlayer() {
-  destroyHls();
 
-  if (!video) return;
+function stopCurrentPlayback() {
 
-  video.pause();
-  video.removeAttribute("src");
+    clearPlayerTimers();
 
-  try {
-    video.load();
-  } catch (error) {
-    console.warn("Erro ao limpar player:", error);
-  }
+    destroyHls();
+
+    const video = getVideo();
+
+    if (video) {
+
+        video.pause();
+
+        video.removeAttribute("src");
+
+        video.load();
+
+    }
+
 }
 
-function updatePlayPauseIcon() {
-  if (!video) return;
-
-  const playIcon = $(".pbtn__icon--play");
-  const pauseIcon = $(".pbtn__icon--pause");
-
-  if (playIcon) {
-    playIcon.style.display = video.paused ? "" : "none";
-  }
-
-  if (pauseIcon) {
-    pauseIcon.style.display = video.paused ? "none" : "";
-  }
-}
 
 function isHlsSource(url) {
-  return /\.m3u8($|[?#])/i.test(url);
-}
 
-function showError(message, requestId) {
-  // Ignora erros pertencentes a um canal anterior.
-  if (requestId !== undefined && requestId !== state.requestId) {
-    return;
-  }
+    try {
 
-  destroyHls();
+        const pathname = new URL(url).pathname.toLowerCase();
 
-  if (video) {
-    video.pause();
-  }
+        return pathname.endsWith(".m3u8");
 
-  setText("#errorMessage", message);
-  showPlayerState("error");
-}
+    } catch {
 
-function attachSource(channel, requestId) {
-  stopPlayer();
+        return false;
 
-  if (!video) {
-    console.error("Elemento #video não encontrado no HTML.");
-    return false;
-  }
-
-  if (!isValidChannelUrl(channel.url)) {
-    showPlayerState("noUrl");
-    return false;
-  }
-
-  // Não exibe o overlay de carregamento.
-  showPlayerState("none");
-
-  const url = channel.url.trim();
-
-  if (isHlsSource(url)) {
-    // Safari e dispositivos com suporte HLS nativo.
-    if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      video.src = url;
-      video.load();
-      return true;
     }
 
-    // HLS.js para Chrome, Edge e Firefox.
-    if (window.Hls && window.Hls.isSupported()) {
-      const hls = new window.Hls({
-        enableWorker: true,
-        lowLatencyMode: true,
-        backBufferLength: 30,
-        maxBufferLength: 30,
-        maxMaxBufferLength: 60
-      });
+}
 
-      state.hls = hls;
 
-      hls.on(window.Hls.Events.ERROR, (_event, data) => {
-        if (requestId !== state.requestId) return;
-        if (!data.fatal) return;
+function showError(message) {
 
-        if (data.type === window.Hls.ErrorTypes.NETWORK_ERROR) {
-          showError(
-            "Falha de rede ao acessar a transmissão. Verifique a URL, os segmentos HLS e as permissões CORS.",
-            requestId
-          );
-        } else if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR) {
-          showError(
-            "Erro de mídia. O formato da transmissão pode ser incompatível.",
-            requestId
-          );
-        } else {
-          showError(
-            "Não foi possível iniciar a transmissão HLS.",
-            requestId
-          );
-        }
-      });
+    clearPlayerTimers();
 
-      hls.attachMedia(video);
+    destroyHls();
 
-      hls.on(window.Hls.Events.MEDIA_ATTACHED, () => {
-        if (requestId !== state.requestId) return;
-        hls.loadSource(url);
-      });
+    errorLog(message);
 
-      return true;
+    const errorMessage = $("#errorMessage");
+
+    if (errorMessage) {
+        errorMessage.textContent = message;
     }
 
-    showError(
-      "Este navegador não oferece suporte à reprodução HLS necessária.",
-      requestId
-    );
+    showPlayerState("error");
 
-    return false;
-  }
-
-  // MP4 e formatos nativos compatíveis.
-  video.src = url;
-  video.load();
-
-  return true;
 }
+
+
+function updatePlayPauseIcon() {
+
+    const video = getVideo();
+
+    if (!video) return;
+
+    const playIcon = $(".pbtn__icon--play");
+    const pauseIcon = $(".pbtn__icon--pause");
+
+    if (playIcon) {
+        playIcon.style.display =
+            video.paused ? "" : "none";
+    }
+
+    if (pauseIcon) {
+        pauseIcon.style.display =
+            video.paused ? "none" : "";
+    }
+
+}
+
 
 /* ============================================================
-   8. SELEÇÃO E REPRODUÇÃO DOS CANAIS
+   12. RECONEXÃO AUTOMÁTICA
+   ============================================================ */
+
+function recoverStream(message) {
+
+    const video = getVideo();
+
+    if (!video || !state.selectedId) return;
+
+    if (state.retryTimer) return;
+
+    if (state.retryCount >= CONFIG.maxRetries) {
+
+        showError(
+            message ||
+            "Não foi possível recuperar a transmissão."
+        );
+
+        return;
+
+    }
+
+    state.retryCount++;
+
+    warn(
+        `Reconexão ${state.retryCount}/${CONFIG.maxRetries}:`,
+        message
+    );
+
+    showPlayerState("loading");
+
+    clearTimeout(state.startupTimer);
+    state.startupTimer = null;
+
+    state.retryTimer = setTimeout(() => {
+
+        state.retryTimer = null;
+
+        const channel = getChannel(state.selectedId);
+
+        if (!channel) return;
+
+        iniciarReproducao(channel, true);
+
+    }, CONFIG.retryDelay);
+
+}
+
+
+/* ============================================================
+   13. WATCHDOG DO PLAYER
+   ============================================================ */
+
+function startPlaybackWatchdog(requestId, channel) {
+
+    clearTimeout(state.startupTimer);
+
+    state.startupTimer = setTimeout(() => {
+
+        if (requestId !== state.requestId) return;
+
+        const video = getVideo();
+
+        if (!video) return;
+
+        if (
+            video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+            !video.paused
+        ) {
+            return;
+        }
+
+        warn(
+            "Tempo limite de inicialização excedido:",
+            channel.name
+        );
+
+        recoverStream(
+            "A transmissão demorou muito para iniciar. Verifique o manifesto e os segmentos do vídeo."
+        );
+
+    }, CONFIG.playbackTimeout);
+
+}
+
+
+/* ============================================================
+   14. REPRODUÇÃO
+   ============================================================ */
+
+function attachSource(channel) {
+
+    const video = getVideo();
+
+    if (!video) {
+        errorLog("Elemento #video não encontrado no HTML.");
+        return false;
+    }
+
+    stopCurrentPlayback();
+
+    const requestId = ++state.requestId;
+
+    state.mediaRecoveryAttempted = false;
+
+    const url = validarURL(channel.url);
+
+    if (!url) {
+
+        showPlayerState("noUrl");
+
+        errorLog(
+            "Canal sem endereço válido:",
+            channel.name
+        );
+
+        return false;
+
+    }
+
+    log("Carregando canal:", channel.name);
+    log("Tipo de transmissão:", isHlsSource(url) ? "HLS" : "MP4 / nativo");
+
+    showPlayerState("loading");
+
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = "auto";
+
+    startPlaybackWatchdog(requestId, channel);
+
+
+    function requestPlayback() {
+
+        if (requestId !== state.requestId) return;
+
+        video.play()
+            .then(() => {
+
+                if (requestId !== state.requestId) return;
+
+                log("Solicitação de reprodução aceita:", channel.name);
+
+            })
+            .catch(err => {
+
+                if (requestId !== state.requestId) return;
+
+                warn("Falha ao iniciar reprodução:", err);
+
+                if (err.name === "NotAllowedError") {
+
+                    showPlayerState("none");
+
+                    warn(
+                        "Reprodução automática bloqueada. Pressione o botão Play."
+                    );
+
+                } else {
+
+                    recoverStream(
+                        "O navegador não conseguiu iniciar a reprodução."
+                    );
+
+                }
+
+            });
+
+    }
+
+
+    function onReady() {
+
+        if (requestId !== state.requestId) return;
+
+        requestPlayback();
+
+    }
+
+
+    /* --------------------------------------------------------
+       HLS
+       -------------------------------------------------------- */
+
+    if (isHlsSource(url)) {
+
+        // Reprodução HLS nativa, quando disponível.
+        const nativeHls = video.canPlayType(
+            "application/vnd.apple.mpegurl"
+        );
+
+        if (nativeHls) {
+
+            log("Utilizando suporte HLS nativo.");
+
+            video.addEventListener(
+                "loadedmetadata",
+                onReady,
+                { once: true }
+            );
+
+            video.addEventListener(
+                "error",
+                () => {
+
+                    if (requestId !== state.requestId) return;
+
+                    const code = video.error?.code;
+
+                    errorLog(
+                        "Erro HLS nativo:",
+                        code,
+                        video.error?.message
+                    );
+
+                    recoverStream(
+                        "Falha ao carregar a transmissão HLS nativa."
+                    );
+
+                },
+                { once: true }
+            );
+
+            video.src = url;
+            video.load();
+
+            return true;
+
+        }
+
+
+        // Reprodução usando HLS.js.
+        if (
+            window.Hls &&
+            window.Hls.isSupported()
+        ) {
+
+            log("Utilizando HLS.js.");
+
+            const hls = new window.Hls({
+
+                enableWorker: true,
+
+                lowLatencyMode: false,
+
+                backBufferLength: 30,
+
+                maxBufferLength: 30,
+
+                maxBufferSize: 60 * 1000 * 1000,
+
+                manifestLoadingTimeOut: 20000,
+
+                manifestLoadingMaxRetry: 2,
+
+                manifestLoadingRetryDelay: 1000,
+
+                levelLoadingTimeOut: 20000,
+
+                levelLoadingMaxRetry: 2,
+
+                fragLoadingTimeOut: 20000,
+
+                fragLoadingMaxRetry: 3,
+
+                startFragPrefetch: true
+
+            });
+
+            state.hls = hls;
+
+
+            hls.on(
+                window.Hls.Events.ERROR,
+                (_event, data) => {
+
+                    if (requestId !== state.requestId) return;
+
+                    errorLog("Erro HLS:", {
+                        type: data.type,
+                        details: data.details,
+                        fatal: data.fatal,
+                        url: data.url,
+                        response: data.response
+                    });
+
+                    if (!data.fatal) return;
+
+
+                    if (
+                        data.type ===
+                        window.Hls.ErrorTypes.NETWORK_ERROR
+                    ) {
+
+                        recoverStream(
+                            `Falha de rede HLS: ${data.details}`
+                        );
+
+                        return;
+
+                    }
+
+
+                    if (
+                        data.type ===
+                        window.Hls.ErrorTypes.MEDIA_ERROR
+                    ) {
+
+                        if (!state.mediaRecoveryAttempted) {
+
+                            state.mediaRecoveryAttempted = true;
+
+                            warn("Tentando recuperar erro de mídia.");
+
+                            try {
+
+                                hls.recoverMediaError();
+
+                            } catch (err) {
+
+                                errorLog(
+                                    "Falha ao recuperar mídia:",
+                                    err
+                                );
+
+                                recoverStream(
+                                    "Não foi possível recuperar a mídia."
+                                );
+
+                            }
+
+                        } else {
+
+                            recoverStream(
+                                "O erro de mídia persistiu após a recuperação."
+                            );
+
+                        }
+
+                        return;
+
+                    }
+
+
+                    showError(
+                        `Erro fatal no HLS: ${data.details || data.type}`
+                    );
+
+                }
+            );
+
+
+            hls.on(
+                window.Hls.Events.MEDIA_ATTACHED,
+                () => {
+
+                    if (requestId !== state.requestId) return;
+
+                    log("Mídia conectada ao HLS.js.");
+
+                    hls.loadSource(url);
+
+                }
+            );
+
+
+            hls.on(
+                window.Hls.Events.MANIFEST_LOADING,
+                () => {
+
+                    if (requestId !== state.requestId) return;
+
+                    log("Carregando manifesto:", url);
+
+                    showPlayerState("loading");
+
+                }
+            );
+
+
+            hls.on(
+                window.Hls.Events.MANIFEST_PARSED,
+                (_event, data) => {
+
+                    if (requestId !== state.requestId) return;
+
+                    log(
+                        "Manifesto carregado.",
+                        "Qualidades:",
+                        data.levels?.length || 0
+                    );
+
+                    requestPlayback();
+
+                }
+            );
+
+
+            hls.on(
+                window.Hls.Events.FRAG_LOADED,
+                () => {
+
+                    if (requestId !== state.requestId) return;
+
+                    log("Segmento de vídeo recebido.");
+
+                }
+            );
+
+
+            // Primeiro conecta o vídeo.
+            hls.attachMedia(video);
+
+            return true;
+
+        }
+
+
+        showError(
+            "Este navegador não oferece suporte ao HLS.js e não possui reprodução HLS nativa."
+        );
+
+        return false;
+
+    }
+
+
+    /* --------------------------------------------------------
+       MP4 E OUTROS FORMATOS NATIVOS
+       -------------------------------------------------------- */
+
+    log("Carregando mídia nativa.");
+
+    video.addEventListener(
+        "loadedmetadata",
+        onReady,
+        { once: true }
+    );
+
+    video.addEventListener(
+        "error",
+        () => {
+
+            if (requestId !== state.requestId) return;
+
+            const mediaError = video.error;
+
+            errorLog(
+                "Erro de mídia:",
+                mediaError?.code,
+                mediaError?.message
+            );
+
+            recoverStream(
+                "O arquivo de vídeo não pôde ser carregado."
+            );
+
+        },
+        { once: true }
+    );
+
+    video.src = url;
+    video.load();
+
+    return true;
+
+}
+
+
+function iniciarReproducao(channel, reconexao = false) {
+
+    if (!channel) return;
+
+    log(
+        reconexao ? "Reconectando:" : "Iniciando:",
+        channel.name
+    );
+
+    attachSource(channel);
+
+}
+
+
+/* ============================================================
+   15. SELEÇÃO DE CANAIS
    ============================================================ */
 
 function selectChannel(id) {
-  const channel = getChannel(id);
-
-  if (!channel || !video) return;
-
-  // Identificador evita que eventos antigos afetem o canal atual.
-  const requestId = ++state.requestId;
-
-  state.selectedId = id;
-
-  state.watching = [
-    id,
-    ...state.watching.filter(item => item !== id)
-  ].slice(0, 6);
-
-  setText("#heroTitle", channel.name);
-  setText("#heroDesc", channel.desc);
-
-  setHidden("#heroLiveTag", !channel.isLive);
-  setHidden("#liveBadge", !channel.isLive);
-
-  updateFavButton(channel);
-
-  renderEpg(channel);
-  renderGrid();
-  renderShelves();
-
-  const sourceReady = attachSource(channel, requestId);
-
-  if (!sourceReady) {
-    stopPlayer();
-    updatePlayPauseIcon();
-    return;
-  }
-
-  // Autoplay silenciado para compatibilidade com navegadores.
-  video.muted = true;
-
-  const playPromise = video.play();
-
-  if (playPromise && typeof playPromise.catch === "function") {
-    playPromise
-      .then(() => {
-        if (requestId !== state.requestId) return;
-
-        // Mantém o áudio liberado depois do início da reprodução.
-        video.muted = false;
-        updatePlayPauseIcon();
-      })
-      .catch(() => {
-        if (requestId !== state.requestId) return;
-
-        // O navegador pode bloquear o autoplay.
-        video.pause();
-        video.muted = false;
-        updatePlayPauseIcon();
-      });
-  }
-}
-
-/* ============================================================
-   9. EVENTOS DO PLAYER
-   ============================================================ */
-
-function setupPlayerControls() {
-  if (!video) {
-    console.error("O HTML precisa conter <video id='video'>.");
-    return;
-  }
-
-  const playPause = $("#playPauseBtn");
-  const mute = $("#muteBtn");
-  const volume = $("#volumeSlider");
-  const fullscreen = $("#fullscreenBtn");
-  const speed = $("#speedSelect");
-
-  function togglePlay() {
-    if (!video.currentSrc && !video.src) return;
-
-    if (video.paused) {
-      video.play().catch(() => {});
-    } else {
-      video.pause();
-    }
-  }
-
-  playPause?.addEventListener("click", togglePlay);
-
-  video.addEventListener("play", updatePlayPauseIcon);
-  video.addEventListener("pause", updatePlayPauseIcon);
-
-  video.addEventListener("playing", () => {
-    showPlayerState("none");
-  });
-
-  // Não exibe overlay de carregamento durante buffering.
-  video.addEventListener("waiting", () => {});
-
-  video.addEventListener("error", () => {
-    if (!state.selectedId) return;
-
-    // Erros do vídeo sem uma fonte atual são ignorados.
-    if (!video.currentSrc && !video.src) return;
-
-    showError(
-      "O stream não pôde ser carregado. Verifique a URL, o servidor e as permissões CORS.",
-      state.requestId
-    );
-  });
-
-  video.addEventListener("timeupdate", () => {
-    const label = $("#timeLabel");
-    if (!label) return;
-
-    if (Number.isFinite(video.duration) && video.duration > 0) {
-      const format = seconds => {
-        const minutes = Math.floor(seconds / 60);
-        const remaining = Math.floor(seconds % 60);
-
-        return (
-          String(minutes).padStart(2, "0") +
-          ":" +
-          String(remaining).padStart(2, "0")
-        );
-      };
-
-      label.textContent =
-        `${format(video.currentTime)} / ${format(video.duration)}`;
-    } else {
-      label.textContent = "AO VIVO";
-    }
-  });
-
-  mute?.addEventListener("click", () => {
-    video.muted = !video.muted;
-    mute.style.opacity = video.muted ? "0.5" : "1";
-  });
-
-  volume?.addEventListener("input", () => {
-    video.volume = Number(volume.value) / 100;
-    video.muted = video.volume === 0;
-
-    if (mute) {
-      mute.style.opacity = video.muted ? "0.5" : "1";
-    }
-  });
-
-  fullscreen?.addEventListener("click", async () => {
-    const shell = $("#playerShell");
-
-    if (!shell) return;
-
-    try {
-      if (document.fullscreenElement) {
-        await document.exitFullscreen();
-      } else if (shell.requestFullscreen) {
-        await shell.requestFullscreen();
-      }
-    } catch (error) {
-      console.warn("Não foi possível ativar tela cheia:", error);
-    }
-  });
-
-  speed?.addEventListener("change", () => {
-    const rate = Number(speed.value);
-
-    video.playbackRate =
-      Number.isFinite(rate) && rate > 0 ? rate : 1;
-  });
-
-  const retry = () => {
-    if (state.selectedId) {
-      selectChannel(state.selectedId);
-    }
-  };
-
-  $("#retryBtn")?.addEventListener("click", retry);
-  $("#errorRetryBtn")?.addEventListener("click", retry);
-
-  updatePlayPauseIcon();
-}
-
-/* ============================================================
-   10. FAVORITOS
-   ============================================================ */
-
-function updateFavButton(channel) {
-  if (!channel) return;
-
-  const button = $("#heroFavBtn");
-  const label = $("#heroFavLabel");
-
-  const isFavorite = state.favorites.has(channel.id);
-
-  if (button) {
-    button.setAttribute("aria-pressed", String(isFavorite));
-  }
-
-  if (label) {
-    label.textContent = isFavorite
-      ? "Nos favoritos"
-      : "Favoritar";
-  }
-}
-
-function setupFavorites() {
-  const button = $("#heroFavBtn");
-
-  if (!button) return;
-
-  button.addEventListener("click", () => {
-    if (!state.selectedId) return;
-
-    const id = state.selectedId;
-
-    if (state.favorites.has(id)) {
-      state.favorites.delete(id);
-    } else {
-      state.favorites.add(id);
-    }
-
-    saveFavorites();
 
     const channel = getChannel(id);
 
+    if (!channel) return;
+
+    state.selectedId = id;
+
+    state.retryCount = 0;
+
+    clearPlayerTimers();
+
+    if (!state.watching.includes(id)) {
+
+        state.watching.unshift(id);
+
+    } else {
+
+        state.watching = state.watching.filter(
+            item => item !== id
+        );
+
+        state.watching.unshift(id);
+
+    }
+
+    state.watching = state.watching.slice(0, 6);
+
+    atualizarHeroStatus(
+        channel.name,
+        channel.desc
+    );
+
+    const heroLiveTag = $("#heroLiveTag");
+    const liveBadge = $("#liveBadge");
+
+    if (heroLiveTag) {
+        heroLiveTag.hidden = !channel.isLive;
+    }
+
+    if (liveBadge) {
+        liveBadge.hidden = !channel.isLive;
+    }
+
     updateFavButton(channel);
+
+    renderEpg(channel);
+
     renderGrid();
+
     renderShelves();
-  });
+
+    iniciarReproducao(channel);
+
 }
 
+
 /* ============================================================
-   11. NAVEGAÇÃO E BUSCA
+   16. CONTROLES DO PLAYER
    ============================================================ */
 
-function setupNav() {
-  const nav = $("#mainNav");
-  const search = $("#searchInput");
+function setupPlayerControls() {
 
-  nav?.addEventListener("click", event => {
-    const button = event.target.closest(".topnav__item");
+    const video = getVideo();
+
+    if (!video) {
+        warn("Elemento #video não encontrado.");
+        return;
+    }
+
+    const playPause = $("#playPauseBtn");
+    const mute = $("#muteBtn");
+    const volume = $("#volumeSlider");
+    const fullscreen = $("#fullscreenBtn");
+    const speed = $("#speedSelect");
+
+
+    function togglePlay() {
+
+        if (!video.currentSrc && !video.src) return;
+
+        if (video.paused) {
+
+            video.play().catch(err => {
+                warn("Falha ao reproduzir:", err);
+            });
+
+        } else {
+
+            video.pause();
+
+        }
+
+    }
+
+
+    playPause?.addEventListener(
+        "click",
+        togglePlay
+    );
+
+
+    video.addEventListener(
+        "play",
+        updatePlayPauseIcon
+    );
+
+    video.addEventListener(
+        "pause",
+        updatePlayPauseIcon
+    );
+
+
+    video.addEventListener(
+        "playing",
+        () => {
+
+            log("Vídeo em reprodução.");
+
+            clearTimeout(state.startupTimer);
+            state.startupTimer = null;
+
+            clearTimeout(state.retryTimer);
+            state.retryTimer = null;
+
+            state.retryCount = 0;
+
+            showPlayerState("none");
+
+            updatePlayPauseIcon();
+
+        }
+    );
+
+
+    video.addEventListener(
+        "waiting",
+        () => {
+
+            if (video.currentSrc || video.src) {
+
+                log("Aguardando dados de vídeo.");
+
+                showPlayerState("loading");
+
+            }
+
+        }
+    );
+
+
+    video.addEventListener(
+        "stalled",
+        () => {
+
+            if (video.currentSrc || video.src) {
+
+                warn("A transmissão parou de receber dados.");
+
+                showPlayerState("loading");
+
+            }
+
+        }
+    );
+
+
+    video.addEventListener(
+        "ended",
+        () => {
+
+            if (state.selectedId) {
+                showPlayerState("noSignal");
+            }
+
+        }
+    );
+
+
+    video.addEventListener(
+        "timeupdate",
+        () => {
+
+            const timeLabel = $("#timeLabel");
+
+            if (!timeLabel) return;
+
+            if (
+                Number.isFinite(video.duration) &&
+                video.duration > 0
+            ) {
+
+                const format = seconds => {
+
+                    const minutes = Math.floor(seconds / 60);
+                    const secs = Math.floor(seconds % 60);
+
+                    return (
+                        String(minutes).padStart(2, "0") +
+                        ":" +
+                        String(secs).padStart(2, "0")
+                    );
+
+                };
+
+                timeLabel.textContent =
+                    `${format(video.currentTime)} / ${format(video.duration)}`;
+
+            } else {
+
+                timeLabel.textContent = "AO VIVO";
+
+            }
+
+        }
+    );
+
+
+    mute?.addEventListener(
+        "click",
+        () => {
+
+            video.muted = !video.muted;
+
+            mute.style.opacity =
+                video.muted ? "0.5" : "1";
+
+        }
+    );
+
+
+    volume?.addEventListener(
+        "input",
+        () => {
+
+            const value = Math.min(
+                100,
+                Math.max(0, Number(volume.value) || 0)
+            );
+
+            video.volume = value / 100;
+
+            video.muted = value === 0;
+
+            if (mute) {
+                mute.style.opacity =
+                    video.muted ? "0.5" : "1";
+            }
+
+        }
+    );
+
+
+    fullscreen?.addEventListener(
+        "click",
+        async () => {
+
+            const shell = $("#playerShell");
+
+            if (!shell) return;
+
+            try {
+
+                if (document.fullscreenElement) {
+
+                    await document.exitFullscreen();
+
+                } else if (shell.requestFullscreen) {
+
+                    await shell.requestFullscreen();
+
+                }
+
+            } catch (err) {
+
+                warn("Erro na tela cheia:", err);
+
+            }
+
+        }
+    );
+
+
+    speed?.addEventListener(
+        "change",
+        () => {
+
+            video.playbackRate =
+                Number(speed.value) || 1;
+
+        }
+    );
+
+
+    function retry() {
+
+        if (!state.selectedId) return;
+
+        const channel = getChannel(state.selectedId);
+
+        if (!channel) return;
+
+        state.retryCount = 0;
+
+        clearPlayerTimers();
+
+        iniciarReproducao(channel);
+
+    }
+
+
+    $("#retryBtn")?.addEventListener(
+        "click",
+        retry
+    );
+
+    $("#errorRetryBtn")?.addEventListener(
+        "click",
+        retry
+    );
+
+
+    video.addEventListener(
+        "volumechange",
+        () => {
+
+            if (mute) {
+                mute.style.opacity =
+                    video.muted ? "0.5" : "1";
+            }
+
+        }
+    );
+
+
+    updatePlayPauseIcon();
+
+}
+
+
+/* ============================================================
+   17. FAVORITOS
+   ============================================================ */
+
+function updateFavButton(channel) {
+
+    const button = $("#heroFavBtn");
+    const label = $("#heroFavLabel");
+
+    if (!button || !label) return;
+
+    const favorite =
+        state.favorites.has(channel.id);
+
+    button.setAttribute(
+        "aria-pressed",
+        String(favorite)
+    );
+
+    label.textContent = favorite
+        ? "Nos favoritos"
+        : "Favoritar";
+
+}
+
+
+function setupFavorites() {
+
+    const button = $("#heroFavBtn");
 
     if (!button) return;
 
-    const category = button.dataset.category;
+    button.addEventListener(
+        "click",
+        () => {
 
-    if (!category) return;
+            if (!state.selectedId) return;
 
-    state.category = category;
+            const id = state.selectedId;
 
-    nav.querySelectorAll(".topnav__item").forEach(item => {
-      const active = item === button;
+            if (state.favorites.has(id)) {
+                state.favorites.delete(id);
+            } else {
+                state.favorites.add(id);
+            }
 
-      item.classList.toggle("is-active", active);
+            saveFavorites();
 
-      if (active) {
-        item.setAttribute("aria-current", "page");
-      } else {
-        item.removeAttribute("aria-current");
-      }
-    });
+            const channel = getChannel(id);
 
-    renderGrid();
-  });
+            if (channel) {
+                updateFavButton(channel);
+            }
 
-  search?.addEventListener("input", event => {
-    state.search = event.target.value || "";
-    renderGrid();
-  });
+            renderGrid();
 
-  $("#profileBtn")?.addEventListener("click", () => {
-    alert(
-      `Perfil "N" — ${state.favorites.size} canal(is) favorito(s).`
+            renderShelves();
+
+        }
     );
-  });
+
 }
 
+
 /* ============================================================
-   12. NAVEGAÇÃO PELO TECLADO
+   18. NAVEGAÇÃO E BUSCA
+   ============================================================ */
+
+function setupNav() {
+
+    const mainNav = $("#mainNav");
+    const searchInput = $("#searchInput");
+    const profileBtn = $("#profileBtn");
+
+
+    mainNav?.addEventListener(
+        "click",
+        event => {
+
+            const button = event.target.closest(
+                ".topnav__item"
+            );
+
+            if (!button || !mainNav.contains(button)) {
+                return;
+            }
+
+            const category = button.dataset.category;
+
+            if (!CATEGORY_LABELS[category]) return;
+
+            state.category = category;
+
+            $$(".topnav__item").forEach(item => {
+
+                const active = item === button;
+
+                item.classList.toggle(
+                    "is-active",
+                    active
+                );
+
+                if (active) {
+                    item.setAttribute("aria-current", "page");
+                } else {
+                    item.removeAttribute("aria-current");
+                }
+
+            });
+
+            renderGrid();
+
+        }
+    );
+
+
+    searchInput?.addEventListener(
+        "input",
+        event => {
+
+            state.search = event.target.value || "";
+
+            renderGrid();
+
+        }
+    );
+
+
+    profileBtn?.addEventListener(
+        "click",
+        () => {
+
+            alert(
+                `Perfil NovaTV — ${state.favorites.size} canal(is) favorito(s).`
+            );
+
+        }
+    );
+
+}
+
+
+/* ============================================================
+   19. NAVEGAÇÃO POR TECLADO
    ============================================================ */
 
 function gridColumns() {
-  const grid = $("#channelGrid");
 
-  if (!grid || !grid.children.length) return 1;
+    const grid = $("#channelGrid");
 
-  const first = grid.children[0].getBoundingClientRect();
+    if (!grid || !grid.children.length) return 1;
 
-  if (!first.width) return 1;
+    const first = grid.children[0]
+        .getBoundingClientRect();
 
-  let columns = 1;
+    const second = grid.children[1]
+        ?.getBoundingClientRect();
 
-  for (let i = 1; i < grid.children.length; i++) {
-    const item = grid.children[i].getBoundingClientRect();
+    if (!second || first.width <= 0) return 1;
 
-    if (Math.abs(item.top - first.top) > 5) break;
+    const gap = second.left - first.left;
 
-    columns++;
-  }
+    return Math.max(
+        1,
+        Math.round(gap / first.width)
+    );
 
-  return Math.max(1, columns);
 }
+
 
 function setupKeyboard() {
-  document.addEventListener("keydown", event => {
-    const active = document.activeElement;
 
-    const typing = active &&
-      ["INPUT", "TEXTAREA", "SELECT"].includes(active.tagName);
+    document.addEventListener(
+        "keydown",
+        event => {
 
-    if (typing) return;
+            const active = document.activeElement;
 
-    if (event.key === " " && active?.classList.contains("card")) {
-      return;
-    }
+            const typing = [
+                "INPUT",
+                "SELECT",
+                "TEXTAREA"
+            ].includes(active?.tagName);
 
-    if (event.key === " " && !typing) {
-      event.preventDefault();
-      $("#playPauseBtn")?.click();
-      return;
-    }
+            if (typing) {
 
-    switch (event.key) {
-      case "ArrowRight":
-      case "ArrowLeft":
-      case "ArrowUp":
-      case "ArrowDown": {
-        const cards = [
-          ...document.querySelectorAll("#channelGrid .card")
-        ];
+                if (event.key === "Escape") {
+                    active.blur();
+                } else {
+                    return;
+                }
 
-        if (!cards.length) return;
+            }
 
-        event.preventDefault();
 
-        const index = cards.indexOf(active);
-        const columns = gridColumns();
+            switch (event.key) {
 
-        let next = index;
+                case " ":
 
-        if (index === -1) {
-          next = 0;
-        } else if (event.key === "ArrowRight") {
-          next = Math.min(index + 1, cards.length - 1);
-        } else if (event.key === "ArrowLeft") {
-          next = Math.max(index - 1, 0);
-        } else if (event.key === "ArrowDown") {
-          next = Math.min(index + columns, cards.length - 1);
-        } else if (event.key === "ArrowUp") {
-          next = Math.max(index - columns, 0);
+                    if (
+                        active?.tagName !== "BUTTON" &&
+                        active?.tagName !== "A"
+                    ) {
+
+                        event.preventDefault();
+
+                        $("#playPauseBtn")?.click();
+
+                    }
+
+                    break;
+
+
+                case "ArrowRight":
+                case "ArrowLeft":
+                case "ArrowUp":
+                case "ArrowDown": {
+
+                    const cards = [
+                        ...$$("#channelGrid .card")
+                    ];
+
+                    if (!cards.length) return;
+
+                    event.preventDefault();
+
+                    const index = cards.indexOf(active);
+
+                    const columns = gridColumns();
+
+                    let next = index;
+
+                    if (index === -1) {
+
+                        next = 0;
+
+                    } else if (event.key === "ArrowRight") {
+
+                        next = Math.min(
+                            index + 1,
+                            cards.length - 1
+                        );
+
+                    } else if (event.key === "ArrowLeft") {
+
+                        next = Math.max(index - 1, 0);
+
+                    } else if (event.key === "ArrowDown") {
+
+                        next = Math.min(
+                            index + columns,
+                            cards.length - 1
+                        );
+
+                    } else if (event.key === "ArrowUp") {
+
+                        next = Math.max(
+                            index - columns,
+                            0
+                        );
+
+                    }
+
+                    cards[next].focus();
+
+                    cards[next].scrollIntoView({
+                        block: "nearest",
+                        behavior: "smooth"
+                    });
+
+                    break;
+
+                }
+
+
+                case "Escape":
+
+                    if (document.fullscreenElement) {
+
+                        document.exitFullscreen().catch(() => {});
+
+                    }
+
+                    break;
+
+
+                case "f":
+                case "F":
+
+                    $("#fullscreenBtn")?.click();
+
+                    break;
+
+
+                case "m":
+                case "M":
+
+                    $("#muteBtn")?.click();
+
+                    break;
+
+            }
+
         }
+    );
 
-        cards[next].focus();
-
-        cards[next].scrollIntoView({
-          block: "nearest",
-          behavior: "smooth"
-        });
-
-        break;
-      }
-
-      case "Escape":
-        if (document.fullscreenElement) {
-          document.exitFullscreen().catch(() => {});
-        }
-
-        $("#searchInput")?.blur();
-        break;
-
-      case "f":
-      case "F":
-        $("#fullscreenBtn")?.click();
-        break;
-
-      case "m":
-      case "M":
-        $("#muteBtn")?.click();
-        break;
-    }
-  });
 }
+
 
 /* ============================================================
-   13. INICIALIZAÇÃO
+   20. INICIALIZAÇÃO
    ============================================================ */
 
-function init() {
-  if (window.novaTVInitialized) return;
+async function init() {
 
-  window.novaTVInitialized = true;
+    if (state.destroyed) return;
 
-  if (!video) {
-    console.error(
-      "NovaTV: elemento <video id='video'> não encontrado."
-    );
-  }
+    log("Inicializando NovaTV...");
 
-  startClock();
+    startClock();
 
-  setupPlayerControls();
-  setupFavorites();
-  setupNav();
-  setupKeyboard();
+    setupPlayerControls();
 
-  renderGrid();
-  renderShelves();
+    setupFavorites();
 
-  const firstChannel =
-    CHANNELS.find(channel => channel.isLive) ||
-    CHANNELS[0];
+    setupNav();
 
-  if (!firstChannel) return;
+    setupKeyboard();
 
-  state.selectedId = firstChannel.id;
+    showPlayerState("loading");
 
-  setText("#heroTitle", firstChannel.name);
-  setText("#heroDesc", firstChannel.desc);
+    const conectado = await carregarCanaisAPI();
 
-  setHidden("#heroLiveTag", !firstChannel.isLive);
-  setHidden("#liveBadge", true);
+    if (state.destroyed) return;
 
-  updateFavButton(firstChannel);
-  renderEpg(firstChannel);
+    if (!conectado || CHANNELS.length === 0) {
 
-  renderGrid();
-  renderShelves();
+        renderGrid();
 
-  showPlayerState("noUrl");
+        renderShelves();
+
+        showPlayerState("noUrl");
+
+        warn(
+            "Nenhum canal disponível. Verifique a API."
+        );
+
+        return;
+
+    }
+
+    renderGrid();
+
+    renderShelves();
+
+    const primeiroCanal = CHANNELS[0];
+
+    if (primeiroCanal) {
+
+        state.selectedId = primeiroCanal.id;
+
+        atualizarHeroStatus(
+            primeiroCanal.name,
+            primeiroCanal.desc
+        );
+
+        const heroLiveTag = $("#heroLiveTag");
+        const liveBadge = $("#liveBadge");
+
+        if (heroLiveTag) {
+            heroLiveTag.hidden = !primeiroCanal.isLive;
+        }
+
+        if (liveBadge) {
+            liveBadge.hidden = !primeiroCanal.isLive;
+        }
+
+        updateFavButton(primeiroCanal);
+
+        renderEpg(primeiroCanal);
+
+        renderGrid();
+
+        renderShelves();
+
+        showPlayerState("noUrl");
+
+    }
+
+    log("NovaTV inicializada com sucesso.");
+
 }
+
+
+/* ============================================================
+   21. INICIALIZAÇÃO DO DOCUMENTO
+   ============================================================ */
 
 if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", init, { once: true });
+
+    document.addEventListener(
+        "DOMContentLoaded",
+        init,
+        { once: true }
+    );
+
 } else {
-  init();
+
+    init();
+
 }
+
+
+/* ============================================================
+   22. ENCERRAMENTO DA PÁGINA
+   ============================================================ */
+
+window.addEventListener(
+    "beforeunload",
+    () => {
+
+        state.destroyed = true;
+
+        clearPlayerTimers();
+
+        destroyHls();
+
+    }
+);
