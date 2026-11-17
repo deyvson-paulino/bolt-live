@@ -2,13 +2,13 @@
 /* ============================================================
    NOVATV - APP.JS
    Player HLS.js + MP4
+   Sem mensagem visual de carregamento
    ============================================================ */
 
 "use strict";
 
 /* ============================================================
    1. CONFIGURAÇÃO DOS CANAIS
-   IMPORTANTE: substitua as URLs pelos seus endereços.
    ============================================================ */
 
 const CHANNELS = [
@@ -50,6 +50,14 @@ const $ = selector => document.querySelector(selector);
 
 const video = $("#video");
 
+const CATEGORY_LABELS = {
+  inicio: "Canais ao vivo",
+  aovivo: "Canais ao vivo",
+  filmes: "Canais de filmes",
+  series: "Canais de séries",
+  favoritos: "Seus favoritos"
+};
+
 /* ============================================================
    3. UTILITÁRIOS
    ============================================================ */
@@ -65,21 +73,25 @@ function loadFavorites() {
 }
 
 function saveFavorites() {
-  localStorage.setItem(
-    "novatv.favorites",
-    JSON.stringify([...state.favorites])
-  );
+  try {
+    localStorage.setItem(
+      "novatv.favorites",
+      JSON.stringify([...state.favorites])
+    );
+  } catch (error) {
+    console.warn("Não foi possível salvar favoritos:", error);
+  }
 }
 
 function getChannel(id) {
-  return CHANNELS.find(channel => channel.id === id);
+  return CHANNELS.find(channel => channel.id === id) || null;
 }
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
 
   if (className) node.className = className;
-  if (text !== undefined) node.textContent = text;
+  if (text != null) node.textContent = text;
 
   return node;
 }
@@ -115,36 +127,27 @@ function startClock() {
 
 /* ============================================================
    5. ESTADOS DO PLAYER
+   A mensagem LOADING não é mais exibida.
    ============================================================ */
 
 function showPlayerState(which) {
   const states = {
     none: null,
     noUrl: $("#stateNoUrl"),
-    loading: $("#stateLoading"),
+    loading: null,
     noSignal: $("#stateNoSignal"),
     error: $("#stateError")
   };
 
   Object.entries(states).forEach(([key, node]) => {
-    if (node) node.hidden = key !== which;
+    if (node) {
+      node.hidden = key !== which;
+    }
   });
 }
 
-function showError(message) {
-  destroyHls();
-
-  const errorMessage = $("#errorMessage");
-
-  if (errorMessage) {
-    errorMessage.textContent = message;
-  }
-
-  showPlayerState("error");
-}
-
 /* ============================================================
-   6. LIMPEZA DA TRANSMISSÃO
+   6. LIMPEZA DA TRANSMISSÃO ANTERIOR
    ============================================================ */
 
 function destroyHls() {
@@ -160,8 +163,21 @@ function destroyHls() {
   }
 }
 
+function showError(message) {
+  destroyHls();
+
+  const errorMessage = $("#errorMessage");
+
+  if (errorMessage) {
+    errorMessage.textContent = message;
+  }
+
+  showPlayerState("error");
+}
+
 /* ============================================================
-   7. NOVO SISTEMA DE CARREGAMENTO HLS
+   7. CONEXÃO COM O SERVIDOR DE STREAMING
+   Sem mensagem visual de carregamento.
    ============================================================ */
 
 function attachSource(channel) {
@@ -186,19 +202,20 @@ function attachSource(channel) {
     return;
   }
 
-  showPlayerState("loading");
+  // Não mostrar mensagem de carregamento.
+  showPlayerState("none");
 
   video.muted = true;
   video.autoplay = true;
   video.playsInline = true;
 
-  /* ========================================================
-     HLS
-     ======================================================== */
+  /* --------------------------------------------------------
+     TRANSMISSÃO HLS
+     -------------------------------------------------------- */
 
   if (url.toLowerCase().includes(".m3u8")) {
 
-    // HLS NATIVO
+    // HLS nativo: Safari e dispositivos compatíveis.
     if (
       video.canPlayType("application/vnd.apple.mpegurl")
     ) {
@@ -206,16 +223,20 @@ function attachSource(channel) {
       video.src = url;
       video.load();
 
+      video.play().catch(error => {
+        console.warn("Autoplay bloqueado:", error);
+      });
+
       return;
     }
 
-    // HLS.JS
+    // HLS.js: Chrome, Firefox e outros navegadores.
     if (
       window.Hls &&
       window.Hls.isSupported()
     ) {
 
-      const hls = new Hls({
+      const hls = new window.Hls({
         enableWorker: true,
         lowLatencyMode: false,
         backBufferLength: 30,
@@ -229,6 +250,8 @@ function attachSource(channel) {
 
         if (requestId !== state.requestId) return;
 
+        console.log("Player conectado ao vídeo.");
+
         hls.loadSource(url);
 
       });
@@ -237,9 +260,12 @@ function attachSource(channel) {
 
         if (requestId !== state.requestId) return;
 
-        showPlayerState("loading");
+        console.log("Playlist HLS carregada.");
 
-        video.play().catch(() => {
+        showPlayerState("none");
+
+        video.play().catch(error => {
+          console.warn("Reprodução manual necessária:", error);
           video.muted = false;
           updatePlayPauseIcon();
         });
@@ -250,13 +276,13 @@ function attachSource(channel) {
 
         if (requestId !== state.requestId) return;
 
-        if (!data.fatal) return;
-
         console.error("Erro HLS:", data);
+
+        if (!data.fatal) return;
 
         if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
 
-          console.warn("Tentando recuperar conexão...");
+          console.warn("Falha de rede. Tentando novamente.");
 
           hls.startLoad();
 
@@ -264,14 +290,14 @@ function attachSource(channel) {
           data.type === Hls.ErrorTypes.MEDIA_ERROR
         ) {
 
-          console.warn("Tentando recuperar mídia...");
+          console.warn("Falha de mídia. Recuperando player.");
 
           hls.recoverMediaError();
 
         } else {
 
           showError(
-            "Não foi possível reproduzir esta transmissão."
+            "Não foi possível iniciar a transmissão. Verifique o servidor de streaming."
           );
 
         }
@@ -284,20 +310,21 @@ function attachSource(channel) {
     }
 
     showError(
-      "Seu navegador não suporta reprodução HLS."
+      "Este navegador não oferece suporte à reprodução HLS."
     );
 
     return;
   }
 
-  /* ========================================================
-     MP4
-     ======================================================== */
+  /* --------------------------------------------------------
+     TRANSMISSÃO MP4
+     -------------------------------------------------------- */
 
   video.src = url;
   video.load();
 
-  video.play().catch(() => {
+  video.play().catch(error => {
+    console.warn("Autoplay bloqueado:", error);
     updatePlayPauseIcon();
   });
 
@@ -324,9 +351,7 @@ function selectChannel(id) {
   $("#heroTitle").textContent = channel.name;
   $("#heroDesc").textContent = channel.desc;
 
-  if ($("#heroLiveTag")) {
-    $("#heroLiveTag").hidden = !channel.isLive;
-  }
+  $("#heroLiveTag").hidden = !channel.isLive;
 
   updateFavButton(channel);
 
@@ -378,12 +403,16 @@ function setupPlayerControls() {
   video.addEventListener("pause", updatePlayPauseIcon);
 
   video.addEventListener("playing", () => {
+
     showPlayerState("none");
-    video.muted = false;
+
+    console.log("Transmissão reproduzindo.");
+
   });
 
+  // Não exibe mensagem enquanto espera os dados.
   video.addEventListener("waiting", () => {
-    showPlayerState("loading");
+    console.log("Aguardando dados da transmissão.");
   });
 
   video.addEventListener("error", () => {
@@ -398,14 +427,24 @@ function setupPlayerControls() {
 
   });
 
+  video.addEventListener("stalled", () => {
+    console.warn("Transmissão temporariamente interrompida.");
+  });
+
   mute.addEventListener("click", () => {
+
     video.muted = !video.muted;
+
     mute.style.opacity = video.muted ? "0.5" : "1";
+
   });
 
   volume.addEventListener("input", () => {
+
     video.volume = volume.value / 100;
+
     video.muted = video.volume === 0;
+
   });
 
   fullscreen.addEventListener("click", () => {
@@ -421,13 +460,17 @@ function setupPlayerControls() {
   });
 
   speed.addEventListener("change", () => {
+
     video.playbackRate = Number(speed.value) || 1;
+
   });
 
   const retry = () => {
+
     if (state.selectedId) {
       selectChannel(state.selectedId);
     }
+
   };
 
   $("#retryBtn").addEventListener("click", retry);
@@ -451,6 +494,7 @@ function updateFavButton(channel) {
 
   $("#heroFavLabel").textContent =
     isFav ? "Nos favoritos" : "Favoritar";
+
 }
 
 function setupFavorites() {
@@ -471,15 +515,17 @@ function setupFavorites() {
 
     const channel = getChannel(id);
 
-    updateFavButton(channel);
+    if (channel) updateFavButton(channel);
+
     renderGrid();
     renderShelves();
 
   });
+
 }
 
 /* ============================================================
-   11. PROGRAMAÇÃO E EPG
+   11. EPG
    ============================================================ */
 
 function currentProgram(channel) {
@@ -487,7 +533,9 @@ function currentProgram(channel) {
   if (!channel.epg || !channel.epg.length) return null;
 
   const now = new Date();
-  const minutes = now.getHours() * 60 + now.getMinutes();
+
+  const minutes =
+    now.getHours() * 60 + now.getMinutes();
 
   for (let i = 0; i < channel.epg.length; i++) {
 
@@ -513,8 +561,11 @@ function currentProgram(channel) {
 }
 
 function parseStart(time) {
+
   const [h, m] = time.split(":").map(Number);
+
   return h * 60 + m;
+
 }
 
 function renderEpg(channel) {
@@ -600,13 +651,13 @@ function channelCard(channel) {
     el("h3", "card__name", channel.name)
   );
 
-  body.appendChild(
-    el(
-      "p",
-      "card__meta",
-      channel.isLive ? "Ao vivo" : "Programado"
-    )
-  );
+  const meta = el("p", "card__meta");
+
+  meta.textContent = channel.isLive
+    ? "Ao vivo"
+    : "Programado";
+
+  body.appendChild(meta);
 
   const current = currentProgram(channel);
 
@@ -628,7 +679,6 @@ function channelCard(channel) {
 function renderGrid() {
 
   const grid = $("#channelGrid");
-
   const empty = $("#gridEmpty");
 
   grid.replaceChildren();
@@ -643,12 +693,12 @@ function renderGrid() {
 
   $("#gridTitle").textContent =
     CATEGORY_LABELS[state.category] || "Canais";
+
 }
 
 function renderShelves() {
 
   const watching = $("#watchingSection");
-
   const watchingRow = $("#watchingRow");
 
   const list = state.watching
@@ -668,19 +718,12 @@ function renderShelves() {
   $("#recommendedRow").replaceChildren(
     ...recommendations.map(channelCard)
   );
+
 }
 
 /* ============================================================
    13. NAVEGAÇÃO
    ============================================================ */
-
-const CATEGORY_LABELS = {
-  inicio: "Canais ao vivo",
-  aovivo: "Canais ao vivo",
-  filmes: "Canais de filmes",
-  series: "Canais de séries",
-  favoritos: "Seus favoritos"
-};
 
 function setupNav() {
 
@@ -694,10 +737,15 @@ function setupNav() {
 
     document.querySelectorAll(".topnav__item").forEach(item => {
 
-      item.classList.toggle(
-        "is-active",
-        item === button
-      );
+      const active = item === button;
+
+      item.classList.toggle("is-active", active);
+
+      if (active) {
+        item.setAttribute("aria-current", "page");
+      } else {
+        item.removeAttribute("aria-current");
+      }
 
     });
 
@@ -710,6 +758,14 @@ function setupNav() {
     state.search = event.target.value;
 
     renderGrid();
+
+  });
+
+  $("#profileBtn")?.addEventListener("click", () => {
+
+    alert(
+      `Perfil NovaTV - ${state.favorites.size} canal(is) favorito(s).`
+    );
 
   });
 
